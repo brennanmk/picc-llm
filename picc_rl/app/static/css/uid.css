@@ -1,0 +1,10 @@
+.display_wrapper {
+    text-align: center;
+    align-items: center;
+    padding-top: 30vh;
+}
+
+.btn {
+    background-color: #212121;
+    border-color: #212121;
+}

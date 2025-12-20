@@ -1,0 +1,28 @@
+learning_ids_to_process:
+  - 2
+number_of_procs: 8
+env: minecraft
+env_config:
+  max_episode_len: 500
+  grid:
+    height: 10
+    width: 10
+  lidar:
+    range: 5
+test_storage: offline
+experiment_name: test
+runs_per_session: 1
+training_config:
+  episodes_per_evaluation: 5
+  episodes_per_iteration: 25
+  max_stability_training_iterations: 20
+  train_until_stable: true
+  stability_delta_threshold: 2.5
+  stability_check_window: 5
+  update_frequency: 1600
+  lr_actor: 0.0001
+  lr_critic: 0.001
+  gamma: 0.99
+  K_epochs: 10
+  eps_clip: 0.2
+  has_continuous_action_space: false

@@ -1,0 +1,22 @@
+experiment_results_paths: []
+user_ids_to_augment: null
+target_total_episodes: 25000
+number_of_procs: 4
+test_storage: augment_experiments
+experiment_name: augment
+env: minecraft
+env_config:
+  max_episode_len: 500
+  grid:
+    height: 10
+    width: 10
+  lidar:
+    range: 5
+training_config:
+  episodes_per_iteration: 25
+  episodes_per_evaluation: 3
+  lr_actor: 0.0003
+  lr_critic: 0.001
+  gamma: 0.99
+  K_epochs: 8
+  eps_clip: 0.2

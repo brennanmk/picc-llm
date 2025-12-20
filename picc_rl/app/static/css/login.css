@@ -1,0 +1,77 @@
+body {
+    overflow-y: hidden;
+}
+
+.grid-container {
+    display: grid;
+    grid-template-columns: 1fr 2fr;
+    grid-auto-rows: minmax(100px, auto);
+}
+
+.grid-item {
+    height: 100vh;
+}
+
+.center-vert {
+    text-align: center;
+    margin: 0;
+    position: relative;
+    top: 50%;
+    -ms-transform: translateY(-50%);
+    transform: translateY(-50%);
+}
+
+.login-item {
+    background-color: #36393e;
+    color: white;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.input-group {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.banner-group {
+    position: absolute;
+    bottom: 1%;
+    width: 33.4%;
+}
+.banner {
+    posistion: relative;
+    margin: auto;
+    display: block;
+    width: 330px;
+}
+
+.btn {
+    background-color: #212121;
+    border-color: #212121;
+}
+
+.center {
+    text-align: center;
+}
+
+.card {
+    width: 60%;
+}
+
+.username {
+    width: 75%;
+    margin: auto;
+    display: block;
+}
+
+.error {
+    color: red;
+    font-style: italic;
+    font-size: 14px;
+}
+::placeholder {
+    text-align: center;
+    align-items: center;
+}

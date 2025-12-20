@@ -1,0 +1,31 @@
+# environment.yml
+name: picc
+channels:
+  - conda-forge
+  - pytorch
+  - nvidia
+
+dependencies:
+  # Core Python
+  - python=3.11
+  
+  # ML/Compute Libraries
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
+  
+  # LLM Libraries 
+  - ollama
+  - langchain
+  - langchain-ollama
+
+  # command line processing
+  - jq
+  - yq
+
+  # Utilities
+  - pip
+  - mysqlclient
+  - matplotlib
+  - seaborn

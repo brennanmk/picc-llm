@@ -1,0 +1,96 @@
+<!doctype html>
+
+<html class="no-js" lang="">
+    <head>
+        <meta charset="utf-8" />
+        <meta http-equiv="x-ua-compatible" content="ie=edge" />
+        <title>MuLIP User Study</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+        <script src="{{ url_for('static', filename='js/bootstrap/bootstrap.bundle.min.js') }}"></script>
+        <link
+            rel="stylesheet"
+            href="{{ url_for('static', filename='css/bootstrap/bootstrap.min.css') }}"
+        />
+
+        <link
+            rel="stylesheet"
+            href="{{ url_for('static', filename='css/default.css') }}"
+        />
+        <link
+            rel="stylesheet"
+            href="{{ url_for('static', filename='css/login.css') }}"
+        />
+    </head>
+    <body>
+        <div class="grid-container">
+            <div class="grid-item">
+                <div class="center-vert">
+                    <h1 style="text-align: center">Welcome!</h1>
+
+                    <p style="font-size: 14px">
+                        If you were already have a user ID number, use it to
+                        sign in. Otherwise, click the register button to get
+                        started.
+                    </p>
+                    <br />
+                </div>
+                <div class="banner-group">
+                    <img class="banner" src="/static/images/mulip.png" />
+                </div>
+            </div>
+
+            <div class="grid-item login-item">
+                <div class="input-group">
+                    <div class="card rounded-0">
+                        <div class="card-header center">Resume Study</div>
+                        <div class="card-body center">
+                            <form
+                                method="post"
+                                id="signinForm"
+                                class="needs-validation"
+                            >
+                                {% if error %}
+                                <label for="uid" class="form-label error"
+                                    >{{ error }}</label
+                                >
+                                {% endif %}
+                                <input
+                                    type="text"
+                                    name="uid"
+                                    class="form-control shadow-none rounded-0 center username"
+                                    id="uid"
+                                    placeholder="User ID"
+                                    required
+                                />
+                                <br />
+                                <button
+                                    type="submit"
+                                    name="signin"
+                                    class="btn btn-primary center"
+                                >
+                                    Sign in
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+
+                    <div class="card rounded-0" style="margin-top: 5%">
+                        <div class="card-header center">Get Started</div>
+                        <div class="card-body center">
+                            <form method="post" id="registerForm">
+                                <button
+                                    type="submit"
+                                    name="register"
+                                    class="btn btn-primary center"
+                                >
+                                    Register
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </body>
+</html>

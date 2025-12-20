@@ -1,0 +1,75 @@
+<!doctype html>
+<html>
+    <head>
+        <meta name="robots" content="noindex" />
+
+        <meta charset="utf-8" />
+        <meta http-equiv="x-ua-compatible" content="ie=edge" />
+        <title>MuLIP User Study</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+        <script src="{{ url_for('static', filename='js/survey/nouislider.min.js') }}"></script>
+        <script src="{{ url_for('static', filename='js/survey/survey.core.min.js') }}"></script>
+        <script src="{{ url_for('static', filename='js/survey/survey.i18n.min.js') }}"></script>
+        <script src="{{ url_for('static', filename='js/survey/index.min.js') }}"></script>
+        <script src="{{ url_for('static', filename='js/survey/survey-js-ui.js') }}"></script>
+        <script src="{{ url_for('static', filename='js/survey/surveyjs-widgets.min.js') }}"></script>
+
+        <link
+            rel="stylesheet"
+            href="{{ url_for('static', filename='css/survey/nouislider.css') }}"
+        />
+        <link
+            rel="stylesheet"
+            href="{{ url_for('static', filename='css/survey/defaultV2.min.css') }}"
+        />
+        <link
+            rel="stylesheet"
+            href="{{ url_for('static', filename='css/default.css') }}"
+        />
+        <link
+            rel="stylesheet"
+            href="{{ url_for('static', filename='css/survey.css') }}"
+        />
+    </head>
+    <body>
+        <div
+            id="surveyElement"
+            style="min-height: 100%; height: 100%; background-color: black"
+        ></div>
+    </body>
+
+    <script>
+        const questionJson = {{ questionnaire_data|tojson|safe }};
+        const themeJson = {{ theme_data|tojson|safe }};
+
+        window['surveyjs-widgets'].nouislider(Survey);
+        const survey = new Survey.Model(questionJson);
+        survey.applyTheme(themeJson);
+
+        function saveSurveyResults(survey) {
+            fetch('{{ url_for(survey_type) }}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(survey.data),
+            })
+            .then((response) => {
+                if (response.redirected && response.ok) {
+                    window.location.href = response.url;
+                } else {
+                    window.location.href = "{{ url_for('error') }}";
+                }
+            })
+            .catch((error) => {
+                window.location.href = "{{ url_for('error') }}";
+            });
+        }
+
+        survey.onComplete.add(saveSurveyResults);
+        survey.showCompletedPage = false;
+        survey.render(document.getElementById('surveyElement'));
+    </script>
+</html>
+

@@ -1,0 +1,17 @@
+.sd-root-modern {
+    background-color: white;
+}
+
+img {
+    display: block;
+    margin: auto;
+    width: 100%;
+}
+
+figure {
+    width: 90%;
+}
+figcaption {
+    font-style: italic;
+    text-align: center;
+}

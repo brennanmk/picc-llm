@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta http-equiv="x-ua-compatible" content="ie=edge" />
+        <title>MuLIP Study UID</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+        <script src="{{ url_for('static', filename='js/bootstrap/bootstrap.bundle.min.js') }}"></script>
+        <link
+            rel="stylesheet"
+            href="{{ url_for('static', filename='css/bootstrap/bootstrap.min.css') }}"
+        />
+
+        <link
+            rel="stylesheet"
+            href="{{ url_for('static', filename='css/default.css') }}"
+        />
+        <link
+            rel="stylesheet"
+            href="{{ url_for('static', filename='css/uid.css') }}"
+        />
+    </head>
+
+    <body>
+        <form method="post">
+            <div class="display_wrapper">
+                <p>Your user identification code is: <b>{{ uid }}</b></p>
+
+                <p>
+                    Please do not lose this code as you will not be able to
+                    revisit this page. <br />
+                    Your UID can be used resume the study incase you get
+                    disconencted.
+                </p>
+
+                <button
+                    type="submit"
+                    name="continue"
+                    class="btn btn-primary center btn-lg rounded-0"
+                >
+                    Continue
+                </button>
+            </div>
+        </form>
+    </body>
+</html>

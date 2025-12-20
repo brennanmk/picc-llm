@@ -1,0 +1,87 @@
+experiment_name: llm_experiment
+trials: 40
+number_of_procs: 15
+test_storage: test_results
+env: minecraft
+env_config:
+  max_episode_len: 500
+  grid:
+    height: 10
+    width: 10
+  lidar:
+    range: 5
+
+use_llm_curriculum: true
+llm_curriculum_iterations: 7
+llm_model: llama3
+llm_temperature: 0.7
+
+llm_training_config:
+  episodes_per_evaluation: 10
+  episodes_per_iteration: 250
+  update_frequency: 1600
+  lr_actor: 0.0001
+  lr_critic: 0.001
+  gamma: 0.99
+  K_epochs: 10
+  has_continuous_action_space: false
+
+standard_training_iterations: 0
+
+# Available parameters for the template:
+# {grid_state}      - (string) The human-readable string representation of the initial grid.
+# {history}         - (string) A multi-line string of all previous stages and their results.
+# {stage}           - (int) The upcoming stage number (e.g., "3").
+# {total_stages}    - (int) The total number of LLM stages (e.g., "7").
+# {last_performance} - (string) A summary of the last stage's results (e.g., "Success rate was 95.00%, avg reward was 0.85.").
+# {width}           - (int) The grid width.
+# {height}          - (int) The grid height.
+llm_messages_template:
+  - - "system"
+    - |
+      You are an expert curriculum designer for a reinforcement learning agent. Your goal is to create a series of progressively harder stages.
+
+      You will be given the initial grid, the agent's performance from the last stage, and a complete history of all previous stages you have designed.
+
+      ### TASK ###
+      1.  **Analyze the history**: Review the previous blocked coordinates and the agent's success rate at each stage. Identify which strategies helped the agent learn and which ones didn't.
+      2.  **Formulate a plan**: Based on your analysis, decide on a specific goal for the NEXT stage. For example, "The agent has mastered getting wood. Now, I will unblock the path to the rock while keeping the chest blocked."
+      3.  **Generate coordinates**: Propose a new set of blocked cells to achieve this goal.
+
+      ### RESPONSE FORMATTING ###
+      First, explain your reasoning step-by-step inside a <thinking> XML tag.
+      Second, after the thinking block, provide the JSON object with the "coordinates" key.
+
+      ### --- IMPORTANT --- ###
+      - Your response MUST start with the <thinking> tag.
+      - The <thinking> tag MUST be immediately followed by the raw JSON object.
+      - DO NOT output a JSON schema describing the object's properties.
+      - DO NOT wrap the JSON in markdown code fences like ```json.
+  - - "human"
+    - |
+      Initial Grid State:
+      A . T . .
+      . . . . .
+      . . R . .
+      . . K U .
+      . C . . .
+      ### Curriculum History ###
+      Stage 1: Blocked [[0, 2], [1, 2], [2, 2], [3, 2], [4, 2], [0, 3], [1, 3], [2, 3], [3, 3], [4, 3], [0, 4], [1, 4], [2, 4], [3, 4], [4, 4]]. Result: Success rate was 95.00%, avg reward was 0.85.
+      This is for the upcoming Stage 2 of 5.
+      Performance from the last stage: Success rate was 95.00%, avg reward was 0.85.
+  - - "ai"
+    - |
+      <thinking>
+      The agent's success rate in Stage 1 was 95%, where I isolated the path to the trees. It has clearly learned to collect wood. For Stage 2, my goal is to introduce the rock. I will unblock the path to the rock but keep the key and chest area blocked off to not overwhelm the agent. To do this, I will block all of the empty cells in the last two rows.
+      </thinking>
+      {
+        "coordinates": [[0, 3], [1, 3], [4, 3], [0, 4], [2, 4], [3, 4], [4, 4]]
+      }
+  - - "human"
+    - |
+      Initial Grid State:
+      {grid_state}
+      ### Curriculum History ###
+      {history}
+      This is for the upcoming Stage {stage} of {total_stages}.
+      Performance from the last stage: {last_performance}

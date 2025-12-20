@@ -1,0 +1,11 @@
+.env*
+.envrc
+*.nix
+models/
+graphs/
+db/
+test_results/
+tests/
+.venv/
+.git
+.gitignore

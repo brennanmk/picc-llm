@@ -1,0 +1,132 @@
+<!doctype html>
+<html class="no-js" lang="">
+    <head>
+        <meta charset="utf-8" />
+        <meta http-equiv="x-ua-compatible" content="ie=edge" />
+        <title>MuLIP Curriculum Design</title>
+        <meta name="description" content="" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+        <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+        <script src="{{ url_for('static', filename='js/jquery/jquery.min.js') }}"></script>
+        <script src="{{ url_for('static', filename='js/timeme/timeme.min.js') }}"></script>
+        <script src="{{ url_for('static', filename='js/bootstrap/bootstrap.bundle.min.js') }}"></script>
+        <link rel="stylesheet" href="{{ url_for('static', filename='css/bootstrap/bootstrap.min.css') }}"/>
+        <link rel="stylesheet" href="{{ url_for('static', filename='css/default.css') }}"/>
+        <link rel="stylesheet" href="{{ url_for('static', filename='css/environment.css') }}"/>
+    </head>
+    <body>
+        <div class="dashboard-container">
+            
+            <div class="panel-config">
+                <div class="config-header">Curriculum Design</div>
+                <form id="curriculum-form">
+                    
+                    <div class="config-section">
+                        <label>Environment Size</label>
+                        <div class="input-group">
+                            <span class="input-group-text">W</span>
+                            <input type="number" id="conf-width" class="form-control" value="10" min="5" max="15">
+                            <span class="input-group-text">H</span>
+                            <input type="number" id="conf-height" class="form-control" value="10" min="5" max="15">
+                        </div>
+                    </div>
+
+                    <hr class="separator">
+
+                    <div class="config-section object-list">
+                        <label>Objects</label>
+                        {% for name, val in configurable_objects.items() %}
+                        <div class="obj-row">
+                            <div class="obj-icon">
+                                {% if val in enum_image_map %}
+                                <img src="{{ enum_image_map[val] }}" alt="{{ name }}">
+                                {% else %}
+                                <div class="obj-placeholder"></div>
+                                {% endif %}
+                            </div>
+                            <div class="obj-name">
+                                {{ name|replace('_', ' ')|lower|title }}
+                            </div>
+                            <div class="obj-input">
+                                <input type="number" 
+                                       class="form-control obj-counter" 
+                                       data-name="{{ name }}"
+                                       value="0" min="0" max="20">
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+
+                    <div class="preview-actions">
+                        <button type="button" class="btn btn-primary w-100" onclick="requestPreview()">
+                            Update Preview
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <div class="panel-preview">
+                <div class="grid-wrapper">
+                    <div class="grid-buttonArray" id="container"></div>
+                </div>
+            </div>
+            
+            <div class="panel-sidebar instruction_box">
+                
+                {% if config and config.reasoning %}
+                <div class="instruction_header" style="color: #17a2b8; border-bottom: 2px solid #17a2b8;">
+                    AI Designer Logic
+                </div>
+                <div style="background-color: #f0f8ff; padding: 10px; border-radius: 4px; font-size: 0.9em; margin-bottom: 15px; border: 1px solid #b8daff;">
+                    {{ config.reasoning }}
+                </div>
+                {% endif %}
+
+                <div class="instruction_header">Instructions</div>
+                <ul>
+                    {% for item in instructions %}
+                    <li>{{ item|safe }}</li>
+                    {% endfor %}
+                </ul>
+
+                {% if visualization is not none %}
+                <div class="instruction_header">Training Progress</div>
+                <ul>
+                    <li>{{ visualization }}</li>
+                </ul>
+                {% endif %} 
+                
+                {% if graph is not none %}
+                <img src="data:image/png;base64,{{ graph }}" class="graph" />
+                {% endif %}
+            </div>
+            
+            <div class="panel-footer">
+                <button
+                    class="btn btn-dark rounded-0 train-btn"
+                    onclick="submitCurriculum()"
+                >
+                    Submit Curriculum for Training
+                </button>
+            </div>
+        </div>
+
+        <script>
+            var timestamp = "{{timestamp}}";
+            const unsynced_url = "{{ url_for('unsynced') }}";
+            const error_url = "{{ url_for('error') }}";
+            const loading_url = "{{ url_for('loading') }}";
+            const environment_url = "{{ url_for('environment') }}";
+            const preview_url = "{{ url_for('preview_environment') }}";
+
+            const client_error_url = "{{ url_for('report_client_error') }}";
+
+            const enumToImage = {{enum_image_map|tojson}};
+            const ObjectEnum = {{ object_enum_map | tojson }};
+            const initialConfig = {{ config|tojson }}; 
+        </script>
+        
+        <script src="{{ url_for('static', filename='js/environment.js') }}"></script>
+    </body>
+</html>
