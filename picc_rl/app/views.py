@@ -45,8 +45,6 @@ from picc_rl.app.utils.app_utils import (
     visualization_type,
 )
 from picc_rl.environments import ENVIRONMENTS
-
-# Tasks for background processing
 from picc_rl.app.tasks import run_training_task, generate_curriculum_task
 
 # =================================================================== #
@@ -79,7 +77,7 @@ SURVEY_HANDLERS = {
 
 def redirect_step(user):
     """
-    A little helper function to handle redirects
+    A helper function to handle redirects
     """
     json_step_order = user.step_order
     redir = json_step_order[0]
@@ -178,10 +176,6 @@ def verify_user(step):
 # =================================================================== #
 #                        Application Routes                           #
 # =================================================================== #
-
-# ------------------------------------------------------------------- #
-#                        Authentication Routes                        #
-# ------------------------------------------------------------------- #
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -328,8 +322,7 @@ def environment():
         app.logger.debug(
             f"User {user_index}: Accessed environment view with GET request."
         )
-        
-        # 1. Check if background task is running (Training or AI Generation)
+
         user_in_progress, _, _ = in_progress(user_index)
         if user_in_progress:
             app.logger.debug(
@@ -339,7 +332,6 @@ def environment():
 
         learning_handler = LearningHandler(user_index)
 
-        # 2. Check if Experiment is complete
         if learning_handler.complete:
             app.logger.debug(
                 f"User {user_index}: Experiment complete. Redirecting to next step."
@@ -347,24 +339,15 @@ def environment():
             user = User.query.filter_by(user_index=user_index).first()
             return redirect_step(user)
 
-        # 3. AUTOMATIC AI GENERATION (Pre-flight)
-        # If no active config exists, trigger AI generation before showing UI.
         if learning_handler.learner.active_environment_config is None:
             app.logger.info(
                 f"User {user_index}: No active config found. Auto-triggering AI generation."
             )
-            
-            # Lock the user state
+
             learning_handler.set_in_progress()
-            
-            # Fire the background task
             generate_curriculum_task.delay(user_index)
-            
-            # Redirect to loading to wait for AI
             return redirect(url_for("loading"))
 
-        # 4. Render Interface
-        # At this point, active_environment_config is populated
         visualization, graph_location, instructions, active_config = (
             learning_handler.generate_environment()
         )
@@ -373,10 +356,10 @@ def environment():
         object_image_map = env.get_object_image_map()
         object_enum_map = env.get_object_enum_map()
         configurable_objects = env.get_configurable_objects()
-        
+
         return render_template(
             "environment.html",
-            config=active_config, # Contains AI params & reasoning
+            config=active_config, 
             visualization=visualization,
             graph=(
                 image_to_base64(graph_location)
@@ -387,7 +370,7 @@ def environment():
             timestamp=datetime.now().isoformat(),
             enum_image_map=object_image_map,
             object_enum_map=object_enum_map,
-            configurable_objects=configurable_objects
+            configurable_objects=configurable_objects,
         )
 
     if request.method == "POST":
@@ -402,7 +385,6 @@ def environment():
             )
             return "", 404
 
-        # Updated to check for 'curriculum_params' instead of 'user_config'
         if "curriculum_params" in data:
             curriculum_params = data["curriculum_params"]
             learning_handler = LearningHandler(user_index)
@@ -413,7 +395,7 @@ def environment():
                     f"User {user_index}: App in debug mode. Queuing job in database."
                 )
                 learning_handler.save_for_offline_training(curriculum_params)
-                return "", 200  # Return success, page will reload to next step
+                return "", 200 
 
             else:
                 app.logger.debug(
@@ -492,13 +474,13 @@ def report_client_error():
     """
     user_index = session["user_index"]
     data = request.get_json() or {}
-    
+
     error_msg = data.get("message", "Unknown Client Error")
     context = data.get("context", {})
 
     app.logger.error(
         f"CRITICAL CLIENT ERROR (User {user_index}): {error_msg} | Context: {context}",
-        exc_info=True
+        exc_info=True,
     )
 
     # Mark the user as failed in the DB so they don't get stuck in a loop

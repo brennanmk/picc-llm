@@ -1,8 +1,8 @@
-# PICC-RL
+# PICC-LLM
 
 ## Introduction
 
-PICC-RL is a project exploring interactive curriculum learning. This codebase contains a web application aimed at making interactive curriculum learning studies easy to set up and run.
+PICC-RL is a project exploring interactive curriculum learning with an LLM. This codebase contains a web application aimed at making interactive curriculum learning studies easy to set up and run.
 
 ---
 
@@ -20,86 +20,88 @@ See the relevant sections below for detailed instructions.
 
 ## Configuration
 
-Configuration for this project is handled in two places: environment variables for secrets and deployment-specific settings, and a Python file for stable, application-level settings.
+Configuration is handled in two layers:
+1.  **Environment Variables (`.env`)**: For secrets, database credentials, resource limits, and deployment-specific flags.
+2.  **Application Config (`config.py`)**: For stable application settings like survey content, LLM prompts, and training hyperparameters.
 
-### Environment Variables (.env)
-Sensitive data and environment-specific settings (like database credentials and file paths) are managed with `.env` files. We provide examples in the `examples/` directory.
+### 1. Environment Variables (.env)
 
-* **For Docker:** Copy `examples/.env.docker.example` to `deploy/.env.docker`, you can also create a `docker/.env` file following `examples/.env.example` to set resource limits.
-* **For Manual Setup:** Copy `examples/.env.local.example` to `.env.local` in the project root.
+Sensitive data and environment-specific settings are managed via `.env` files. We provide templates in the `examples/` directory.
 
-After copying the appropriate file, open it and fill in the required values.
+#### For Docker Users
+1.  **Main Config:** Copy `examples/.env.docker.example` to `deploy/.env.docker`.
+2.  **Resource Limits:** Create a `docker/.env` file (see `examples/.env.example`) to set container limits.
 
-### Application Configuration (config.py)
-Less frequently changed settings, such as the order of experiments presented in the web application, are defined directly in the file `picc_rl/app/config.py`. You can edit this file to change these stable, application-level configurations.
+**Key Environment Variables:**
+
+| Variable | Description | Example |
+| :--- | :--- | :--- |
+| `APP_DEBUG_MODE` | If `true`, runs in debug mode (skips LLM generation, offline training). | `false` |
+| `SECRET_KEY` | Flask session secret. | `super-secret-key` |
+| `MYSQL_HOST` | Database hostname. | `db` (docker) or `localhost` |
+| `MYSQL_PASSWORD` | Database password. | `password` |
+| `OLLAMA_HOST` | URL for the LLM service. | `http://ollama:11434` |
+| `OLLAMA_MODEL` | LLM model to use. | `llama3.1` |
+| `CPU_SET` | (Docker Only) CPU cores assigned to containers. | `0-8` |
+| `MEM_LIMIT` | (Docker Only) Memory limit for containers. | `32g` |
+
+#### For Manual Setup
+Copy `examples/.env.local.example` to `.env.local` in the project root and fill in the values.
+
+### 2. Application Configuration (config.py)
+Stable settings that rarely change across deployments are defined in `picc_rl/app/config.py`.
+
+You can modify this file to change:
+* **Survey Content:** Edit the `QUESTIONNAIRES` dictionary to modify questions or HTML content.
+* **LLM Prompts:** Adjust `LLM_SETTINGS` to tune the system prompts or chain-of-thought pipelines.
+* **Training Hyperparameters:** Modify `TRAINING_CONFIG` (e.g., learning rates, gamma, updates).
+* **Study Order:** Change `ORDER` to rearrange the sequence of views (e.g., swapping pre/post questionnaires).
 
 ---
 
 ## Running the Web Application
 
-This repository can serve a web application for interacting with and visualizing the learning process.
-
 ### Running with Docker Compose (Recommended)
 The Docker environment is the recommended way to run the web application for demonstration or production use.
 
-1.  **Configure your environment** as described in the Configuration section.
+1.  **Configure your environment** as described above.
 2.  **Start the services** from the root of the project.
     ```bash
     docker compose up -d
     ```
 3.  Once started, navigate to `http://localhost:8000` in your web browser.
 
-### nginx config
-This webapp can also make use of nginx. An example of this, shown
-in the `deploy` directory is used to provide two optional pages,
-maintenance and complete.
+#### Nginx Configuration & Maintenance Modes
+The Docker setup includes an Nginx proxy that serves the application. You can manually trigger "Maintenance" or "Study Complete" pages by creating specific files in the `deploy/nginx/static/` directory. This is useful for gracefully shutting down the study without crashing the server.
 
-The inclusion of these two pages through nginx is so that even if the
-webapp crashes, we can show something to users. We can also easily
-mark the study as completed or down for maitenance manually.
-
-When running with Docker, you can put the site into "Maintenance Mode"
-or "Study Complete Mode" by creating a file. This is handled by the
-Nginx container.
-
-Turn ON Maintenance Mode (Shows a 503 page):
-`touch deploy/nginx/static/maintenance_on`
-
-Turn OFF Maintenance Mode:
-`rm deploy/nginx/static/maintenance_on`
-
-Turn OFF the Study (Shows the "Study Complete" page):
-`touch deploy/nginx/static/complete_on`
-
-Turn ON the Study:
-`rm deploy/nginx/static/complete_on`
-
+* **Turn ON Maintenance Mode** (503 Page):
+    `touch deploy/nginx/static/maintenance_on`
+* **Turn OFF Maintenance Mode:**
+    `rm deploy/nginx/static/maintenance_on`
+* **End the Study** (Study Complete Page):
+    `touch deploy/nginx/static/complete_on`
+* **Restart the Study:**
+    `rm deploy/nginx/static/complete_on`
 
 ### Manual Setup for Web App & Experiments
-This section contains instructions for installing and running PICC-RL manually. A manual setup is **required** for running experiments locally.
+A manual setup is **required** if you plan to run experiments locally or develop on the codebase.
 
-1.  **Configuration**: Set up your `.env.local` file as described in the Configuration section.
-2.  **Environment Setup**: You can set up your Python environment using Nix, Conda, or a standard `venv`.
-    * **Nix**: If you are running Nix, this repository includes a `shell.nix` file. We recommend using `direnv` to automatically load the environment.
-    * **Conda**: If you prefer using Conda, note that this is a two-step process.
-        1.  Load your Conda installation. On some shared systems, this is done via a module command (the exact command may vary):
-            ```bash
-            module load miniforge/24.11.2-py312
-            ```
-        2.  Create the base environment from the `environment.yml` file. This creates an environment named `picc`.
-            ```bash
-            conda env create -f environment.yml
-            ```
-        3.  Activate your new environment:
-            ```bash
-            conda activate picc
-            ```
-        4.  Install the remaining dependencies using Pip:
-            ```bash
-            pip install -r requirements.txt
-            ```
-    * **venv**: Create and source a virtual environment (`python3 -m venv .venv`, `source .venv/bin/activate`), then install dependencies with `pip install -r requirements.txt`.
-3.  **Running the Web Application**: With your environment activated, start the development server.
+1.  **Configuration**: Set up your `.env.local` file.
+2.  **Environment Setup**:
+    * **Nix**: Use `direnv allow` (if installed) or `nix-shell`.
+    * **Conda**:
+        ```bash
+        conda env create -f environment.yml
+        conda activate picc
+        pip install -r requirements.txt
+        ```
+    * **venv**:
+        ```bash
+        python3 -m venv .venv
+        source .venv/bin/activate
+        pip install -r requirements.txt
+        ```
+3.  **Run the App**:
     ```bash
     python3 -m flask --app picc_rl/app run
     ```
@@ -108,30 +110,29 @@ This section contains instructions for installing and running PICC-RL manually. 
 
 ## Running Experiments
 
-You can also use this codebase to run machine learning experiments. This requires a **Manual Setup** (see above).
+You can use this codebase to run automated RL experiments, using the same AI Architect logic as the web app.
 
 ### On a Local Machine
-To run a single experiment for testing or debugging, you can directly execute the training script.
+To run a single experiment or baseline training run:
 
-1.  Ensure your manual environment is set up and your virtual environment is activated.
-2.  Run the training script using the following command, pointing to a configuration file:
+1.  Ensure your environment is active.
+2.  Run the training script with a configuration file:
     ```bash
-    python3 -m picc_rl.utils.train_ppo.py --config path/to/your/config.json
+    python3 -m picc_rl.utils.train_ppo --config examples/automated_curriculum.yaml
     ```
-    An example experiment configuration file is provided at `examples/example_config.json`. We recommend you copy and modify it for your experiments.
 
 ### On a Slurm Cluster
-For larger experiments, you can use the example Slurm script to submit jobs to an HPC cluster.
+For large-scale data collection:
 
 1.  **Copy the example script**:
     ```bash
     cp examples/example_job.slurm submit_my_job.slurm
     ```
-2.  **Edit the script `submit_my_job.slurm`**: You **must** change the `#SBATCH` directives (like `--account`, `--partition`) to match your cluster's configuration. You should also ensure the `python3 -m ...` command inside the script points to your desired experiment configuration.
-3.  **Submit the job** to the Slurm scheduler:
+2.  **Edit the script**: Update `#SBATCH` directives (partition, account, time) and ensure the command points to your config file.
+3.  **Submit**:
     ```bash
     sbatch submit_my_job.slurm
     ```
 
 ---
-This `README.md` was written with help from Google's Gemini.
+*This README.md was written with help from Google's Gemini.*

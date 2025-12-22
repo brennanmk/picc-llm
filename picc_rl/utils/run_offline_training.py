@@ -1,18 +1,29 @@
 #!/usr/bin/env python3
 
 """
-run_offline_training.py
------------------------
-Reads session data from EITHER a live database OR a JSON file,
-runs offline training, and saves results.
+picc_rl.utils.run_offline_training
+==================================
 
-Generates .npz files containing:
-- 'reward', 'timestep', 'success': 1D arrays of final eval metrics per stage.
-- 'x_axis_episode': 1D array of cumulative episodes at the end of each stage.
-- 'x_axis_timestep': 1D array of cumulative timesteps at the end of each stage.
+A utility to re-run or simulate training sessions offline using the ``Trainer`` class.
 
-Generates a consolidated .json file containing 'stage_total_episodes'
-and 'stage_total_timesteps' for use by augment_training.py.
+This script reads session specifications (either from a live database or a JSON dump),
+spins up fresh training instances, and executes the training curriculum. It is designed
+for batch processing on high-performance computing (HPC) clusters or local workstations
+independent of the web server.
+
+Key Features:
+    - **Dual Data Source:** Can ingest data from a JSON file (legacy/dump) or list of DB IDs.
+    - **Robust Replay:** If a stage configuration is missing (e.g., in an open-ended
+      AI experiment), it can optionally query the ``LLMHandler`` to regenerate it dynamically.
+    - **Target Validation:** Ensures every training stage is evaluated against the *Target Task*
+      (Final Goal), allowing for consistent "Distance to Goal" plots.
+
+Output:
+    - **.npz files:** Numpy archives containing high-resolution arrays for plotting.
+    - **.json files:** Consolidated logs of the re-run sessions.
+
+.. module:: run_offline_training
+   :synopsis: CLI tool for batch offline processing of RL training sessions.
 """
 
 import json
@@ -21,7 +32,7 @@ import argparse
 import os
 import requests
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from pydantic import BaseModel, model_validator
 from tqdm import tqdm
 import importlib
@@ -30,22 +41,28 @@ import numpy as np
 import torch.multiprocessing as mp
 
 from picc_rl.learning.trainer import Trainer
-
 from picc_rl.llm.llm_handler import LLMHandler, format_curriculum_history
 
 
 class ProcessingConfig(BaseModel):
     """
-    Defines the configuration for a targeted offline processing run.
-    Validates that exactly one data source is provided.
+    Configuration schema for an offline processing run.
+
+    This class uses Pydantic to validate the YAML configuration file provided
+    at runtime. It enforces that exactly one data source (file or DB IDs) is provided.
+
+    :param session_data_file: Optional path to a JSON dump of session data.
+    :param training_config: Dictionary of hyperparameters passed to the PPO Trainer.
+    :param llm_settings: Configuration for the AI Architect (if dynamic generation is needed).
+    :param env: The environment ID (e.g., 'minecraft').
+    :param env_config: The **Target Task** configuration (used for final evaluation).
     """
 
-    learning_ids_to_process: Optional[List[int]] = None
-    session_data_file: Optional[str] = None
+    session_data_file: str
 
     training_config: Dict
     llm_settings: Dict[str, Any]
-    
+
     env: str
     env_config: dict = {}
     number_of_procs: int = 1
@@ -55,25 +72,21 @@ class ProcessingConfig(BaseModel):
     env_path: Optional[str] = None
     post_complete: Optional[str] = None
 
-    @model_validator(mode="after")
-    def check_data_source(self):
-        """Ensures exactly one data source is specified."""
-        has_db_ids = self.learning_ids_to_process is not None
-        has_file = self.session_data_file is not None
 
-        if not has_db_ids and not has_file:
-            raise ValueError(
-                "Either 'session_data_file' (for JSON) or 'learning_ids_to_process' (for DB) must be provided."
-            )
-        if has_db_ids and has_file:
-            raise ValueError(
-                "Provide *either* 'session_data_file' or 'learning_ids_to_process', not both."
-            )
-        
 class OfflineProcessor:
-    """Orchestrates the parallel processing of offline jobs."""
+    """
+    Orchestrates the parallel processing of offline training jobs.
+
+    This class manages the multiprocessing pool, distributes work items (sessions)
+    to worker processes, and aggregates the results into a final report.
+    """
 
     def __init__(self, config_path: str):
+        """
+        Initialize the processor.
+
+        :param config_path: Path to the YAML config file.
+        """
         with open(config_path, "r") as f:
             self.config = ProcessingConfig(**yaml.safe_load(f))
 
@@ -90,14 +103,16 @@ class OfflineProcessor:
         )
         self.run()
 
-    def run(self):
+    def run(self) -> None:
         """
-        Loads learning sessions from the configured data source (DB or JSON)
-        and distributes them to a processing pool.
+        Main execution loop.
+
+        Loads learning sessions from the configured data source and spawns
+        a ``torch.multiprocessing`` pool to process them in parallel.
         """
         mp.set_start_method("spawn", force=True)
-        
-        all_session_data = [] # This list will be populated by either branch
+
+        all_session_data = []
 
         if self.config.session_data_file:
             data_file_path = self.config.session_data_file
@@ -106,17 +121,14 @@ class OfflineProcessor:
                 print(f"Error: Session data file not found at {data_file_path}")
                 return
             with open(data_file_path, "r") as f:
-                all_session_data = json.load(f) # This is already a list of dicts
+                all_session_data = json.load(f)
 
         print(f"Loaded {len(all_session_data)} total sessions to process.")
-        
+
         worker_args = []
         for session_data in all_session_data:
             for run_idx in range(self.config.runs_per_session):
-                worker_args.append(
-                    # Pass the whole session_data dict to the worker
-                    (session_data, self.config, self.save_path, run_idx)
-                )
+                worker_args.append((session_data, self.config, self.save_path, run_idx))
 
         print(
             f"Will execute {self.config.runs_per_session} run(s) per session, "
@@ -146,16 +158,17 @@ class OfflineProcessor:
 
     @staticmethod
     def _worker(
-        session_data: dict,
-        config: ProcessingConfig, 
-        run_save_path: str, 
-        run_index: int
+        session_data: dict, config: ProcessingConfig, run_save_path: str, run_index: int
     ) -> Optional[dict]:
         """
-        Worker that processes one session.
-        Handles both pre-defined curriculum replay and dynamic AI generation if config is missing.
+        Static worker method that processes a single training session.
+
+        :param session_data: Dictionary containing the history of a specific user session.
+        :param config: Global configuration object.
+        :param run_save_path: Directory where artifacts for this run should be stored.
+        :param run_index: The iteration index (if running multiple trials per session).
+        :return: A dictionary containing the re-run logs, or None on failure.
         """
-        # Initialize results structure
         session_results = {"iterations": []}
         all_eval_rewards, all_eval_timesteps, all_eval_successes = [], [], []
         x_axis_episodes, x_axis_timesteps = [], []
@@ -164,12 +177,14 @@ class OfflineProcessor:
 
         episodes_per_iter = config.training_config.get("episodes_per_iteration", 0)
         session_id = session_data.get("learning_id")
-        
+
         print(f"Session {session_id} (run {run_index}) starting training")
 
         training_progress = session_data.get("training_progress")
         if not training_progress:
-            print(f"Warning: Session {session_id} has no 'training_progress'. Skipping.")
+            print(
+                f"Warning: Session {session_id} has no 'training_progress'. Skipping."
+            )
             return None
 
         env_class = (
@@ -181,35 +196,40 @@ class OfflineProcessor:
         try:
             session_run_id = (1000 * session_id) + run_index
             session_results["learning_id"] = session_run_id
-            
+
             new_model_dir = os.path.join(
                 run_save_path, "models", f"session_{session_run_id}"
             )
             os.makedirs(new_model_dir, exist_ok=True)
             model_save_path = os.path.join(new_model_dir, "model.pt")
 
-            # --- START STAGE LOOP ---
             for stage_idx, stage in enumerate(training_progress):
-                
                 curriculum_params = stage.get("curriculum_params")
+
                 base_params = stage.get("base_params")
+                if base_params is None:
+                    base_params = config.env_config
 
                 if curriculum_params is None:
-                    print(f"  > Session {session_id}: Stage {stage_idx+1} Config Missing. Triggering AI Architect...")
-                    
+                    print(
+                        f"  > Session {session_id}: Stage {stage_idx + 1} Config Missing. Triggering AI Architect..."
+                    )
+
                     try:
-                        history_str = format_curriculum_history(session_results["iterations"])                       
+                        history_str = format_curriculum_history(
+                            session_results["iterations"]
+                        )
                         context_data = {
                             "context": history_str,
                             "current_stage": stage_idx + 1,
-                            "total_stages": len(training_progress) 
+                            "total_stages": len(training_progress),
                         }
-                        
+
                         llm_handler = LLMHandler(settings=config.llm_settings)
-                        
+
                         generated_config = llm_handler.generate_curriculum(context_data)
                         print(f"  > AI Generated Config: {generated_config}")
-                        
+
                         curriculum_params = generated_config
 
                     except Exception as e:
@@ -226,32 +246,22 @@ class OfflineProcessor:
                     **config.training_config,
                 )
 
-                train_result = trainer.train_model(
-                    curriculum_params=curriculum_params,
-                    base_params=base_params
-                )
-
-                if train_result is None:
-                    raise RuntimeError(f"Trainer returned None for stage {stage_idx}")
-
                 (
                     train_reward,
                     train_timesteps,
                     train_success,
-                    train_eval_rewards,
-                    train_eval_timesteps,
-                    train_eval_success,
-                    final_eval_reward,
-                    final_eval_timesteps,
-                    final_eval_success,
+                    stage_eval_rewards,
+                    stage_eval_timesteps,
+                    stage_eval_success,
+                    target_eval_rewards,
+                    target_eval_timesteps,
+                    target_eval_successes,
                     iterations_taken,
                     checkpoint_path,
-                ) = train_result
+                ) = trainer.train_model(
+                    curriculum_params=curriculum_params, base_params=base_params
+                )
 
-                stage_total_timesteps = sum(train_timesteps)
-                stage_total_episodes = iterations_taken * episodes_per_iter
-
-                # Append to our local results (which also serves as history for the next AI step)
                 session_results["iterations"].append(
                     {
                         "curriculum_params": curriculum_params,
@@ -259,29 +269,30 @@ class OfflineProcessor:
                         "train_reward": train_reward,
                         "train_timesteps": train_timesteps,
                         "train_success": train_success,
-                        "train_eval_reward": train_eval_rewards,
-                        "train_eval_timesteps": train_eval_timesteps,
-                        "train_eval_success": train_eval_success,
-                        "final_eval_reward": final_eval_reward,
-                        "final_eval_timesteps": final_eval_timesteps,
-                        "final_eval_success": final_eval_success,
+                        "stage_eval_reward": stage_eval_rewards,
+                        "stage_eval_timesteps": stage_eval_timesteps,
+                        "stage_eval_success": stage_eval_success,
+                        "target_eval_reward": target_eval_rewards,
+                        "target_eval_timesteps": target_eval_timesteps,
+                        "target_eval_success": target_eval_successes,
                         "iterations_taken": iterations_taken,
                         "model_path": model_save_path,
                         "training_config": config.training_config,
-                        "stage_total_timesteps": stage_total_timesteps,
-                        "stage_total_episodes": stage_total_episodes,
                     }
                 )
 
-                all_eval_rewards.append(final_eval_reward)
-                all_eval_timesteps.append(final_eval_timesteps)
-                all_eval_successes.append(final_eval_success)
+                all_eval_rewards.extend(target_eval_rewards)
+                all_eval_timesteps.extend(target_eval_timesteps)
+                all_eval_successes.extend(target_eval_successes)
 
-                cumulative_episodes += stage_total_episodes
-                x_axis_episodes.append(cumulative_episodes)
+                num_points = len(target_eval_rewards)
+                for i in range(num_points):
+                    cumulative_episodes += episodes_per_iter
+                    x_axis_episodes.append(cumulative_episodes)
 
-                cumulative_timesteps += stage_total_timesteps
-                x_axis_timesteps.append(cumulative_timesteps)
+                    steps_this_iter = train_timesteps[i] * episodes_per_iter
+                    cumulative_timesteps += int(steps_this_iter)
+                    x_axis_timesteps.append(cumulative_timesteps)
 
                 print(
                     f"Completed stage {stage_idx + 1}/{len(training_progress)} for session {session_id} (run {run_index})"
@@ -306,10 +317,15 @@ class OfflineProcessor:
         except Exception as e:
             print(f"ERROR in worker for session {session_id} (run {run_index}): {e}")
             import traceback
+
             traceback.print_exc()
             return None
 
     def _post_complete_hook(self):
+        """
+        Sends an HTTP POST request to a configured endpoint upon completion.
+        Useful for notifying a Slack webhook or a monitoring service.
+        """
         if self.config.post_complete:
             try:
                 message = f"Offline run '{self.config.experiment_name}' complete. Results at {self.save_path}"

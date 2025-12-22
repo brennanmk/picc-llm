@@ -55,7 +55,6 @@ _INSTRUCTIONS = [
     f"To get <b>iron ore</b>, the robot needs a <b>pickaxe</b>. The <b>pickaxe</b> is inside the locked <b>chest</b> <img src='{_OBJECT_IMAGE_MAP.get(Object.CHEST.value)}' style='height: 1em; vertical-align: middle;'/>.",
     f"To unlock the <b>chest</b>, the robot must craft a <b>key</b> at the <b>crafting table</b> using 2 <b>key fragments</b> <img src='{_OBJECT_IMAGE_MAP.get(Object.KEY_FRAGMENT.value)}' style='height: 1em; vertical-align: middle;'/>.",
     f"The robot <img src='{_OBJECT_IMAGE_MAP.get(Object.AGENT.value)}' style='height: 1em; vertical-align: middle;'/> can collect fragments, trees, and rocks in any order, but the crafting/unlocking/smelting steps must be done in order.",
-    f"Click cells <img src='{_OBJECT_IMAGE_MAP.get(Object.EDGE.value)}' style='height: 1em; vertical-align: middle;'/> to block/unblock them.",
 ]
 
 _PRIMER_TEMPLATE = """

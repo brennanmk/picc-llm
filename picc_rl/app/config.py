@@ -449,6 +449,7 @@ class Config:
         },
     }
 
+    # LLM related options
     LLM_SETTINGS = {
             "connection": {
                 "model": environ.get("OLLAMA_MODEL", "llama3.1"),

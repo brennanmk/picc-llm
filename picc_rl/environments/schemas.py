@@ -7,16 +7,9 @@ picc_rl.environments.schemas
 Definitions of schemas shared between environments.
 """
 
-from typing import Dict, List, Any
+from typing import Dict, List
 import gymnasium as gym
 import abc
-from enum import Enum
-
-
-class TrainingMode(str, Enum):
-    """
-    Defines how the environment config should be handled during reset.
-    """
 
 
 class PiccEnv(gym.Env, abc.ABC):

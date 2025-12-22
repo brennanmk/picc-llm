@@ -23,35 +23,57 @@ TimeMe.initialize({
 // STARTUP LOGIC
 // =========================================================
 window.onload = function() {
+    // 1. Validate Config
+    // We strictly require dimensions, but 'objects' is now optional.
     const isValidConfig = (
         typeof initialConfig !== 'undefined' && 
         initialConfig !== null && 
         !Array.isArray(initialConfig) &&
-        initialConfig.hasOwnProperty('width') &&
-        initialConfig.hasOwnProperty('objects')
+        initialConfig.hasOwnProperty('width') && 
+        initialConfig.hasOwnProperty('height')
     );
 
     if (isValidConfig) {
         console.log("Loading AI Configuration:", initialConfig);
 
+        // 2. Populate Dimensions
         if (initialConfig.width) document.getElementById('conf-width').value = initialConfig.width;
         if (initialConfig.height) document.getElementById('conf-height').value = initialConfig.height;
         
-        document.querySelectorAll('.obj-counter').forEach(el => el.value = 0);
-        
-        for (const [name, count] of Object.entries(initialConfig.objects)) {
-            let input = document.querySelector(`.obj-counter[data-name="${name}"]`);
+        // 3. Populate Objects (Robust Method)
+        // Instead of trusting the keys in initialConfig.objects, we iterate the 
+        // actual inputs in our DOM. This filters out any hallucinations/invalid keys 
+        // from the AI and safely defaults to 0 if missing.
+        const configObjects = initialConfig.objects || {};
+
+        document.querySelectorAll('.obj-counter').forEach(input => {
+            // Default to 0
+            input.value = 0;
             
-            if (!input) input = document.querySelector(`.obj-counter[data-name="${name.toUpperCase()}"]`);
+            const name = input.getAttribute('data-name');
             
-            if (input) input.value = count;
-        }
+            // Check if config has this object (Exact match)
+            let val = configObjects[name];
+            
+            // Fallback: Check uppercase match (backend enums are usually UPPERCASE)
+            if (val === undefined && name) {
+                val = configObjects[name.toUpperCase()];
+            }
+
+            // If we found a valid number, apply it
+            if (val !== undefined && val !== null) {
+                input.value = val;
+            }
+        });
         
+        // 4. Generate visual preview
         requestPreview();
         
+        // 5. Start Sync
         timerInterval = setInterval(syncWithServer, syncInterval);
 
     } else {
+        // --- CRITICAL FAILURE HANDLING ---
         const errorMsg = "Invalid Configuration State: Backend did not provide valid AI Parameters.";
         const context = { receivedConfig: initialConfig };
         
@@ -78,7 +100,7 @@ function requestPreview() {
     let width = parseInt(widthInput.value) || 10;
     let height = parseInt(heightInput.value) || 10;
     
-    // Safety Clamps (Matches backend logic)
+    // Safety Clamps
     if (width < 5) width = 5; if (width > 20) width = 20;
     if (height < 5) height = 5; if (height > 20) height = 20;
 
@@ -107,7 +129,6 @@ function requestPreview() {
             renderGrid(data.grid);
         } else {
             console.error("Preview Error:", data.message);
-            // We don't necessarily crash here, user can try adjusting inputs
         }
     })
     .catch(error => {
@@ -117,7 +138,6 @@ function requestPreview() {
 
 /**
  * Renders the 2D grid array into the preview container.
- * @param {Array<Array<number>>} gridConfig 
  */
 function renderGrid(gridConfig) {
     const container = document.getElementById('container');
@@ -128,7 +148,6 @@ function renderGrid(gridConfig) {
     const rows = gridConfig.length;
     const cols = gridConfig[0].length;
 
-    // Update CSS Grid Layout
     container.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
     container.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
 
@@ -138,16 +157,13 @@ function renderGrid(gridConfig) {
             const cellDiv = document.createElement('div');
             cellDiv.classList.add('env-cell');
             
-            // Render Content (Images)
             if (cellVal !== EMPTY_VALUE) {
                 const img = document.createElement('img');
-                // Use backend map, fallback to empty string to avoid broken image icons
                 img.src = enumToImage[cellVal] || ''; 
                 img.classList.add('cell-image');
                 cellDiv.appendChild(img);
             }
 
-            // Render Walls/Edges
             if (cellVal === EDGE_VALUE) {
                 cellDiv.classList.add('blocked');
             }
@@ -159,7 +175,6 @@ function renderGrid(gridConfig) {
 
 /**
  * Submits the current parameters to start training.
- * Sends the parameters dictionary, NOT the grid array.
  */
 function submitCurriculum() {
     done = true;
@@ -178,7 +193,6 @@ function submitCurriculum() {
 
     const elapsedTime = TimeMe.getTimeOnCurrentPageInSeconds();
     
-    // Construct payload matching the backend's expectation
     const data = { 
         elapsed_time: elapsedTime,
         curriculum_params: {
@@ -189,11 +203,9 @@ function submitCurriculum() {
         timestamp: Date.now()
     };
 
-    // Use sendBeacon for reliability on navigation
     const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
     navigator.sendBeacon(environment_url, blob);
 
-    // Redirect to loading screen
     window.location.href = loading_url;
 }
 

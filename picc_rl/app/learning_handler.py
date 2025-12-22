@@ -2,10 +2,15 @@
 
 """
 picc_rl.app.learning_handler
--------------------------------------
+============================
 
-module containing logic to handle progression of place study. Mostly related to
-maintaining a list of trainers.
+This module contains the logic for handling the progression of the user study.
+It acts as the controller for the reinforcement learning lifecycle, managing
+the state of trainers, interacting with the database models, and coordinating
+experiment flow.
+
+.. module:: learning_handler
+   :synopsis: Logic for handling RL training progression and state management.
 """
 
 from picc_rl.visualizations import visualizations
@@ -17,11 +22,22 @@ from picc_rl.app.models import User, Learning
 from sqlalchemy.orm.attributes import flag_modified
 
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Tuple, Optional
 
 
 class LearningHandler:
+    """
+    Manages the learning session for a specific user.
+
+    This class is responsible for initializing the training environment, checks
+    if the user has completed their assigned experiment conditions, and orchestrates
+    the training process using the :class:`picc_rl.learning.trainer.Trainer`.
+    """
+
     def __init__(self, user_index: int) -> None:
+        """
+        Initialize the LearningHandler, loading state from the database.
+        """
         self.trainer = None
         self.learner = None
         self.user_index = user_index
@@ -51,8 +67,9 @@ class LearningHandler:
             )
 
         self.environment = model.environment
-
         training_progress_list = model.training_progress
+
+        # Check if the user has completed the required number of iterations for this condition
         if (
             len(training_progress_list)
             >= app.config["TRAINING_ITERATIONS_PER_CONDITION"]
@@ -62,11 +79,13 @@ class LearningHandler:
             )
 
             model.complete = True
+            # Advance to the next experiment
             del json_experiment_order[0]
 
             user.experiment_order = json_experiment_order
             flag_modified(user, "experiment_order")
 
+            # If all experiments are done, advance the overall step order
             if len(json_experiment_order) == 0:
                 app.logger.debug(f"User {user_index} has completed experimentation.")
                 del json_step_order[0]
@@ -79,6 +98,7 @@ class LearningHandler:
             db.session.commit()
 
         elif not model.complete:
+            # Initialize Trainer if there is work left to do
             try:
                 env_config = app.config["ENV_CONFIGS"][self.environment]
             except KeyError:
@@ -96,8 +116,10 @@ class LearningHandler:
             )
             self.learner = model
 
-    def set_in_progress(self):
-        """Marks user as in progress."""
+    def set_in_progress(self) -> None:
+        """
+        Marks the current learning session as 'in progress' in the database.
+        """
         if self.learner.in_progress:
             app.logger.error(
                 f"User {self.user_index} tried to set training in progress but already in progress"
@@ -109,13 +131,11 @@ class LearningHandler:
 
     def train(self, curriculum_params: Dict[str, Any]) -> None:
         """
-        Train a user's model for one iteration using the provided curriculum parameters.
-        
-        :param curriculum_params: Dictionary defining the environment generation rules.
+        Executes a single iteration of training based on the provided curriculum parameters.
         """
 
         def update_progress(current: float):
-            """Callback function to update the database with training progress."""
+            """Internal callback to update database progress during training loop."""
             self.learner.progress_current = current
             db.session.commit()
 
@@ -123,22 +143,24 @@ class LearningHandler:
 
         # Store the active parameters
         self.learner.active_environment_config = curriculum_params
+        
+        target_config = app.config.get("TARGET_ENV_CONFIG", {})
 
         (
             train_reward,
             train_timesteps,
             train_success,
-            train_eval_rewards,
-            train_eval_timesteps,
-            train_eval_success,
-            final_eval_reward,
-            final_eval_timesteps,
-            final_eval_success,
+            stage_eval_rewards,
+            stage_eval_timesteps,
+            stage_eval_success,
+            target_eval_rewards,
+            target_eval_timesteps,
+            target_eval_successes,
             iterations_taken,
             checkpoint_path,
         ) = self.trainer.train_model(
             curriculum_params=curriculum_params,
-            base_params=None, # Optional: pass a baseline curriculum here if needed
+            base_params=target_config,
             progress_callback=update_progress,
         )
 
@@ -149,12 +171,15 @@ class LearningHandler:
             "train_reward": train_reward,
             "train_timesteps": train_timesteps,
             "train_success": train_success,
-            "train_eval_reward": train_eval_rewards,
-            "train_eval_timesteps": train_eval_timesteps,
-            "train_eval_success": train_eval_success,
-            "final_eval_reward": final_eval_reward,
-            "final_eval_timesteps": final_eval_timesteps,
-            "final_eval_success": final_eval_success,
+            
+            "stage_eval_reward": stage_eval_rewards,
+            "stage_eval_timesteps": stage_eval_timesteps,
+            "stage_eval_success": stage_eval_success,
+            
+            "target_eval_reward": target_eval_rewards,
+            "target_eval_timesteps": target_eval_timesteps,
+            "target_eval_success": target_eval_successes,
+            
             "visualization": self.learner.active_visualization,
             "iterations_taken": iterations_taken,
             "model_path": checkpoint_path,
@@ -178,15 +203,11 @@ class LearningHandler:
         
         db.session.commit()
 
-    def generate_environment(self) -> tuple:
+    def generate_environment(self) -> Tuple[Optional[str], str, str, Optional[Dict[str, Any]]]:
         """
-        Returns the environment setup data. 
-        In Curriculum mode, this primarily returns the instructions and stored params.
+        Retrieves the current environment configuration and metadata for the frontend.
         """
         json_active_config = self.learner.active_environment_config
-        
-        # We assume the frontend handles the "preview" generation based on these params
-        # or defaults if None are present.
         
         return (
             self.learner.active_visualization,
@@ -197,8 +218,8 @@ class LearningHandler:
 
     def save_for_offline_training(self, curriculum_params: Dict[str, Any]) -> None:
         """
-        Saves a full training job specification directly to the
-        database without actually doing any training (Debug Mode).
+        Saves a training job specification to the database without executing training.
+        Used for DEBUG mode.
         """
         job_package = {
             "model_location": self.learner.model_location,
@@ -208,9 +229,12 @@ class LearningHandler:
             "train_reward": [],
             "train_timesteps": [],
             "train_success": [],
-            "eval_reward": [],
-            "eval_timesteps": [],
-            "eval_success": [],
+            "stage_eval_reward": [],
+            "stage_eval_timesteps": [],
+            "stage_eval_success": [],
+            "target_eval_reward": [],
+            "target_eval_timesteps": [],
+            "target_eval_success": [],
             "visualization": self.learner.active_visualization,
             "iterations_taken": 0,
             "model_path": None,

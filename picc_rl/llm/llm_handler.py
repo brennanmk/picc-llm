@@ -20,14 +20,11 @@ def format_curriculum_history(training_progress: List[Dict]) -> str:
     """
     history = []
 
-    # Check if training_progress exists/is not empty
     if not training_progress:
         return "No previous stages completed (Initial Stage)."
 
     for idx, entry in enumerate(training_progress):
-        # (Rest of logic remains exactly the same)
         params = entry.get("curriculum_params") or entry.get("user_config", {})
-        # Format configuration description
         if isinstance(params, dict) and "objects" in params:
             grid_str = f"{params.get('width')}x{params.get('height')}"
             obj_str = ", ".join(
@@ -52,7 +49,6 @@ def format_curriculum_history(training_progress: List[Dict]) -> str:
     return "\n\n".join(history)
 
 
-# --- Config Schemas ---
 class LLMConnectionConfig(BaseModel):
     model: str
     base_url: str
@@ -76,15 +72,12 @@ class LLMSettings(BaseModel):
     prompts: PromptConfig
 
 
-# --- Output Schema ---
 class CurriculumParameters(BaseModel):
     reasoning: str = Field(description="Explanation of the design choices.")
     width: int = Field(ge=6, le=15, description="Grid width.")
     height: int = Field(ge=6, le=15, description="Grid height.")
     objects: Dict[str, int] = Field(description="Map of object names to counts.")
 
-
-# --- Main Handler ---
 class LLMHandler:
     def __init__(self, settings: Optional[Dict] = None):
         """

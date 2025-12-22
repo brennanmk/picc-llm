@@ -2,16 +2,19 @@
 
 """
 picc_rl.learning.trainer
---------------------------
+========================
 
-Module for trainer class responsible for training agent
+This module contains the ``Trainer`` class, which serves as the core engine
+for the reinforcement learning process. It manages the lifecycle of the PPO agent,
+handles parallel environment vectorization, and executes the training loop with
+dual-evaluation capabilities (Curriculum Subtask vs. Target Task).
 
-Gemini helped with doc strings and parallelization refactor
+.. module:: trainer
+   :synopsis: Core PPO training and evaluation logic with support for curriculum changes.
 """
 
 from picc_rl.environments import ENVIRONMENTS
 from picc_rl.learning.ppo import PPO
-from picc_rl.environments.schemas import TrainingMode
 from picc_rl.environments.wrappers import ConfigResetWrapper
 
 from pydantic import BaseModel, ValidationError
@@ -19,13 +22,17 @@ from gymnasium import wrappers
 from gymnasium.vector import SyncVectorEnv
 import numpy as np
 import os
-import copy
-from typing import Union, Callable, Optional, Tuple, List, Dict, Any
+from typing import Union, Callable, Optional, Tuple, Dict, Any, List
 from collections import deque
 import torch
 
 
 class TrainerKwargs(BaseModel):
+    """
+    Pydantic model for validating Trainer configuration arguments.
+    Ensures all hyperparameters are correctly typed before initialization.
+    """
+
     episodes_per_evaluation: int
     episodes_per_iteration: int
     max_episode_len: int = 500
@@ -59,8 +66,22 @@ class TrainerKwargs(BaseModel):
 
 class Trainer:
     """
-    This class is responsible for training and evaluating PPO models
-    using parallel vectorized environments.
+    Manages the training and evaluation of PPO agents using parallel vectorized environments.
+
+    This class abstracts away the complexity of:
+        - Initializing the VectorEnv (SyncVectorEnv).
+        - Managing PPO hyperparameters and buffer updates.
+        - Executing the "Train -> Evaluate (Stage) -> Evaluate (Target)" loop.
+        - Saving checkpoints and final models.
+
+    :param env: The environment class or registry string ID (e.g., 'minecraft').
+    :param save_path: Filesystem path to save the final model.
+    :param load_path: Optional path to load a pre-trained model state dict.
+    :param checkpoint_dir: Directory to save intermediate checkpoints.
+    :param seed: Random seed for reproducibility.
+    :param training_iteration_start: Offset for iteration count (useful for resuming).
+    :param env_config: Default configuration dictionary for the environment.
+    :param kwargs: Additional arguments unpacked into :class:`TrainerKwargs`.
     """
 
     def __init__(
@@ -102,7 +123,6 @@ class Trainer:
                     else self.env_name_or_class(**self.default_env_config)
                 )
 
-                # ConfigResetWrapper handles set_config and set_curriculum_params calls
                 env = ConfigResetWrapper(base_env)
 
                 if self.max_episode_len:
@@ -174,9 +194,12 @@ class Trainer:
                 "Trainer: Starting training from scratch (no valid load_path provided)."
             )
 
-    def _try_decay(self, current_session_episodes: int):
+    def _decay(self, current_session_episodes: int):
         """
         Calculates and applies the decayed learning rate based on global progress.
+
+        Uses ``self._total_episodes_completed`` + current session progress to determine
+        the decay factor.
         """
         if not (
             self._decay_lr
@@ -210,7 +233,13 @@ class Trainer:
     def _apply_curriculum(self, params: Optional[Dict[str, Any]]):
         """
         Applies the curriculum parameters to the parallel environments.
-        This forces the environment to regenerate its layout based on these params.
+
+        This triggers ``set_curriculum_params`` on the vector env, forcing the
+        underlying environment to regenerate its layout (e.g., resizing grid,
+        adding obstacles) based on the provided dictionary.
+
+        :param params: Dictionary of environment parameters.
+        :raises ValueError: If params is not a dictionary.
         """
         if params is None:
             return
@@ -224,22 +253,39 @@ class Trainer:
     def train_model(
         self,
         curriculum_params: Dict[str, Any],
-        base_params: Optional[Dict[str, Any]] = None,
+        base_params: Dict[str, Any],
         progress_callback: Optional[Callable[[int], None]] = None,
     ) -> Tuple:
-        """Main training loop for the PPO agent."""
+        """
+        Executes the main training loop with double evaluation.
+
+        :param curriculum_params: The config used for TRAINING (the subtask).
+        :param base_params: The config used for TARGET EVALUATION (the final goal).
+                            Must be provided.
+        :param progress_callback: Optional callback to report percentage completion.
+        :return: A 11-element tuple containing lists of metrics, iteration count, and model path.
+        """
 
         training_iterations = (
             self._max_stability_training_iterations if self._train_until_stable else 1
         )
 
         eval_reward_history = deque(maxlen=self._stability_check_window)
+
+        # Training Metrics (During collection)
         all_train_rewards = []
         all_train_timesteps = []
         all_train_successes = []
-        all_train_eval_rewards = []
-        all_train_eval_timesteps = []
-        all_train_eval_successes = []
+
+        # Stage Metrics (Evaluation on Subtask)
+        all_stage_eval_rewards = []
+        all_stage_eval_timesteps = []
+        all_stage_eval_successes = []
+
+        # Target Metrics (Evaluation on Base/Full Task)
+        all_target_eval_rewards = []
+        all_target_eval_timesteps = []
+        all_target_eval_successes = []
 
         iterations_taken = 0
 
@@ -250,7 +296,7 @@ class Trainer:
                 progress_callback if not self._train_until_stable else None
             )
 
-            # Apply user curriculum parameters
+            # Train on subtask
             self._apply_curriculum(curriculum_params)
 
             (
@@ -265,20 +311,32 @@ class Trainer:
             all_train_timesteps.append(current_train_timesteps)
             all_train_successes.append(current_train_success)
 
-            # Apply base/comparison curriculum if provided
-            if base_params is not None:
-                self._apply_curriculum(base_params)
-
+            # Eval on subtask
             (
-                eval_reward_mean,
-                eval_timesteps_mean,
-                eval_success,
+                stage_reward_mean,
+                stage_timesteps_mean,
+                stage_success,
             ) = self._evaluate_model()
 
-            all_train_eval_rewards.append(eval_reward_mean)
-            all_train_eval_timesteps.append(eval_timesteps_mean)
-            all_train_eval_successes.append(eval_success)
+            all_stage_eval_rewards.append(stage_reward_mean)
+            all_stage_eval_timesteps.append(stage_timesteps_mean)
+            all_stage_eval_successes.append(stage_success)
 
+            # Eval on Target Task
+            self._apply_curriculum(base_params)
+            (
+                target_reward_mean,
+                target_timesteps_mean,
+                target_success,
+            ) = self._evaluate_model()
+
+            all_target_eval_rewards.append(target_reward_mean)
+            all_target_eval_timesteps.append(target_timesteps_mean)
+            all_target_eval_successes.append(target_success)
+
+            self._apply_curriculum(curriculum_params)
+
+            # Check Stability
             if self._train_until_stable:
                 if progress_callback:
                     progress = int(
@@ -287,13 +345,13 @@ class Trainer:
                     )
                     progress_callback(min(progress, 100))
 
-                eval_reward_history.append(eval_reward_mean)
-                current_window_mean = sum(eval_reward_history) / len(
-                    eval_reward_history
-                )
-
+                eval_reward_history.append(stage_reward_mean)
                 if len(eval_reward_history) == self._stability_check_window:
+                    current_window_mean = sum(eval_reward_history) / len(
+                        eval_reward_history
+                    )
                     current_delta = max(eval_reward_history) - min(eval_reward_history)
+
                     is_stable = current_delta < self._stability_delta_threshold
                     is_performing = current_window_mean > self._min_stability_reward
 
@@ -302,21 +360,8 @@ class Trainer:
                             f"Stable (Delta: {current_delta}) and Performing (Mean: {current_window_mean}). Advancing."
                         )
                         break
-            else:
-                break
-
-        # Final Evaluation
-        if base_params is not None:
-            self._apply_curriculum(base_params)
-
-        (
-            final_eval_reward_mean,
-            final_eval_timesteps_mean,
-            final_eval_success_rate,
-        ) = self._evaluate_model()
 
         self._ppo_agent.buffer.clear()
-
         self._ppo_agent.save(self._save_path)
 
         if self._checkpoint_dir:
@@ -333,23 +378,21 @@ class Trainer:
             all_train_rewards,
             all_train_timesteps,
             all_train_successes,
-            all_train_eval_rewards,
-            all_train_eval_timesteps,
-            all_train_eval_successes,
-            final_eval_reward_mean,
-            final_eval_timesteps_mean,
-            final_eval_success_rate,
+            all_stage_eval_rewards,
+            all_stage_eval_timesteps,
+            all_stage_eval_successes,
+            all_target_eval_rewards,
+            all_target_eval_timesteps,  # Return new list
+            all_target_eval_successes,
             iterations_taken,
             checkpoint_path,
         )
 
     def generate_environment(self) -> List:
-        """Helper function to generate a random environment configuration.
+        """
+        Helper function to generate a random environment configuration.
 
-        Kept for potential API compatibility, but curriculum generation happens
-        inside environment reset logic.
-
-        :return: The encoded environment configuration (or empty).
+        :return: The encoded environment configuration.
         """
         self._unwrapped_env.reset(config=None, seed=self.seed)
         return self._unwrapped_env.encode_config()
@@ -357,7 +400,8 @@ class Trainer:
     def _train_iteration(
         self, progress_callback: Optional[Callable[[int], None]] = None
     ) -> Tuple[float, float, float]:
-        """Runs a single training iteration using parallel environments.
+        """
+        Runs a single training iteration using parallel environments.
 
         This involves collecting experiences from all environments step-by-step
         and updating the policy when the buffer is full.
@@ -433,7 +477,7 @@ class Trainer:
 
                 # Update policy
                 if len(self._ppo_agent.buffer.rewards) >= self._update_frequency:
-                    self._try_decay(total_episodes_collected)
+                    self._decay(total_episodes_collected)
                     self._ppo_agent.update()
                     self._ppo_agent.buffer.clear()
 
@@ -449,7 +493,11 @@ class Trainer:
         )
 
     def _evaluate_model(self) -> Tuple[float, float, float]:
-        """Evaluates the current policy's performance using parallel environments.
+        """
+        Evaluates the current policy's performance using parallel environments.
+
+        Runs the agent deterministically (inference mode) until ``episodes_per_evaluation``
+        are collected.
 
         :return: A tuple containing (mean_reward, mean_timesteps, success_rate).
         """

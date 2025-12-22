@@ -2,21 +2,27 @@
 
 """
 picc_rl.utils.train_ppo
--------------------
+=======================
 
-Experiment runner for PPO training, which parses a configuration file to run
-one or more trials.
+Experiment runner for automated PPO training.
 
-This script leverages multiprocessing to run multiple trials in parallel.
-It uses the centralized LLMHandler to simulate the "AI Architect" role
-without human intervention, allowing for fully automated baseline data collection.
+This script parses a configuration file to execute one or more training trials.
+It leverages multiprocessing to run trials in parallel.
 
-Outputs a npz for analysis containing:
-- 'x_axis_timestep': 1D array of shape (num_points,)
-- 'x_axis_episode': 1D array of shape (num_points,)
-- 'reward': A 2D array of shape (total_combined_trials, num_points)
-- 'timestep': A 2D array of shape (total_combined_trials, num_points)
-- 'success': A 2D array of shape (total_combined_trials, num_points)
+Modes of Operation:
+    1. **LLM Curriculum:** Uses the ``LLMHandler`` to simulate an "AI Architect." 
+       The LLM reviews the training history (just like a human would) and generates
+       new environment configurations.
+    2. **Standard Training:** Runs a baseline PPO agent against the default 
+       environment configuration (Target Task) for a set number of iterations.
+
+Output:
+    - **.npz file:** A consolidated archive containing rewards, timesteps, and success rates
+      for all trials, suitable for plotting comparisons.
+    - **.yaml file:** A dump of the configuration used for the run.
+
+.. module:: train_ppo
+   :synopsis: Automated experiment runner for LLM-guided vs. Standard RL.
 """
 
 from picc_rl.llm.llm_handler import LLMHandler, format_curriculum_history
@@ -29,14 +35,23 @@ import requests
 import yaml
 import argparse
 from typing import Optional, List, Tuple, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 import importlib
 from tqdm import tqdm
-import copy
 
 
 class TrainPPOConfig(BaseModel):
-    """Configuration schema for a PPO training experiment."""
+    """
+    Configuration schema for a PPO training experiment.
+
+    :param trials: Number of independent trials to run in parallel.
+    :param number_of_procs: Number of worker processes to spawn.
+    :param test_storage: Directory for saving results.
+    :param env: The environment ID string.
+    :param llm_training_config: Hyperparameters for PPO during LLM phases.
+    :param standard_training_config: Hyperparameters for PPO during standard phases.
+    :param env_config: The **Target Task** configuration used for evaluation.
+    """
 
     trials: int
     number_of_procs: int
@@ -61,10 +76,16 @@ class TrainPPOConfig(BaseModel):
 
 
 class TrainPPO:
-    """Manages the setup and execution of a PPO training experiment."""
+    """
+    Manages the setup and execution of a PPO training experiment.
+    """
 
     def __init__(self, config: str) -> None:
-        """Initializes and runs the PPO training experiment based on a config file."""
+        """
+        Initializes and runs the PPO training experiment based on a config file.
+
+        :param config: Path to the YAML configuration file.
+        """
         with open(config, "r") as f:
             conf_dict = yaml.safe_load(f)
 
@@ -98,12 +119,15 @@ class TrainPPO:
         print(f"Completed, results in {self.save_path}")
 
         if self.config.post_complete is not None:
-            requests.post(
-                self.config.post_complete,
-                data=f"Training complete --- see {self.save_path}".encode(
-                    encoding="utf-8"
-                ),
-            )
+            try:
+                requests.post(
+                    self.config.post_complete,
+                    data=f"Training complete --- see {self.save_path}".encode(
+                        encoding="utf-8"
+                    ),
+                )
+            except Exception as e:
+                print(f"Failed to send post_complete notification: {e}")
 
     def _validate_config(self):
         """Validates the loaded configuration to ensure logical consistency."""
@@ -157,7 +181,11 @@ class TrainPPO:
     def _start_experiment(
         self,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Starts the multiprocessing pool and collects results from all trials."""
+        """
+        Starts the multiprocessing pool and collects results from all trials.
+        
+        :return: Tuple of numpy arrays (reward, timestep, success, x_episodes, x_timesteps)
+        """
         mp.set_start_method("spawn", force=True)
         with mp.Pool(self.config.number_of_procs) as pool:
             data = [(i, self.config, self.save_path) for i in range(self.config.trials)]
@@ -166,6 +194,7 @@ class TrainPPO:
         reward_sum = [data[0] for data in process_data]
         timesteps = [data[1] for data in process_data]
         success = [data[2] for data in process_data]
+        
         x_axis_episodes_data = process_data[0][3] if process_data else np.array([])
         x_axis_timesteps_data = process_data[0][4] if process_data else np.array([])
 
@@ -184,44 +213,64 @@ class TrainPPO:
         cumulative_episodes: int,
         cumulative_timesteps: int,
         episodes_per_iter: int,
-        training_progress_list: List[Dict],  # NEW: Keep track of history locally
+        training_progress_list: List[Dict],
         curriculum_params: Dict,
     ) -> Tuple[int, int]:
         """
-        Helper function to process results and update trackers/history.
+        Helper function to unpack Trainer results, update trackers, and maintain history.
+        
+        Crucially, this extracts metrics from the **Target Task** evaluation lists
+        to ensure the recorded history reflects progress toward the final goal.
+
+        :param train_model_output: The 11-element tuple returned by ``Trainer.train_model``.
+        :param trackers: Dictionary of lists for storing plotting data (reward, success, etc.).
+        :param cumulative_episodes: Total episodes trained so far in this trial.
+        :param cumulative_timesteps: Total environment steps taken so far.
+        :param episodes_per_iter: Number of episodes per training iteration (config).
+        :param training_progress_list: List of stage dictionaries used as context for the LLM.
+        :param curriculum_params: The configuration used for the current training stage.
+        :return: A tuple (updated_cumulative_episodes, updated_cumulative_timesteps).
         """
         (
-            _,
+            train_reward,
             train_timesteps_list,
-            _,
-            _,
-            _,
-            _,
-            eval_rewards,
-            eval_timesteps,
-            eval_success,
+            train_success,
+            stage_eval_rewards,
+            stage_eval_timesteps,
+            stage_eval_success,
+            target_eval_rewards,
+            target_eval_timesteps,
+            target_eval_successes,
             iterations_taken,
-            _,
+            checkpoint_path,
         ) = train_model_output
 
-        trackers["reward"].append(eval_rewards)
-        trackers["timestep"].append(eval_timesteps)
-        trackers["success"].append(eval_success)
+        trackers["reward"].extend(target_eval_rewards)
+        trackers["success"].extend(target_eval_successes)
+        trackers["timestep"].extend(target_eval_timesteps)
 
-        cumulative_episodes += iterations_taken * episodes_per_iter
-        trackers["x_axis_episodes"].append(cumulative_episodes)
+        num_points = len(target_eval_rewards)
+        
+        for i in range(num_points):
+            cumulative_episodes += episodes_per_iter
+            trackers["x_axis_episodes"].append(cumulative_episodes)
 
-        stage_total_timesteps = sum(train_timesteps_list)
-        cumulative_timesteps += stage_total_timesteps
-        trackers["x_axis_timesteps"].append(cumulative_timesteps)
+            steps_this_iter = train_timesteps_list[i] * episodes_per_iter
+            cumulative_timesteps += int(steps_this_iter)
+            trackers["x_axis_timesteps"].append(cumulative_timesteps)
 
-        # Update Local History for LLM Context
         training_progress_list.append(
             {
                 "curriculum_params": curriculum_params,
-                "final_eval_success": eval_success,
-                "final_eval_reward": eval_rewards,
-                "final_eval_timesteps": eval_timesteps,
+                "train_reward": train_reward,
+                "train_timesteps": train_timesteps_list,
+                "train_success": train_success,
+                "stage_eval_reward": stage_eval_rewards,
+                "stage_eval_timesteps": stage_eval_timesteps,
+                "stage_eval_success": stage_eval_success,
+                "target_eval_reward": target_eval_rewards,
+                "target_eval_timesteps": target_eval_timesteps,
+                "target_eval_success": target_eval_successes,
             }
         )
 
@@ -236,15 +285,29 @@ class TrainPPO:
         trackers: Dict[str, List],
         cumulative_episodes: int,
         cumulative_timesteps: int,
-        training_progress_list: List[Dict],  # Passed in to maintain state
+        training_progress_list: List[Dict],
     ) -> Tuple[int, int]:
-        """Runs the LLM-guided curriculum training phase."""
+        """
+        Runs the LLM-guided curriculum training phase.
+
+        Iteratively queries the LLM for new environment parameters based on the 
+        training history, then trains the agent on the generated curriculum step.
+        
+        :param config: The experiment configuration object.
+        :param trial_number: The index of the current trial (for seeding/logging).
+        :param env_class: The class of the environment to instantiate.
+        :param model_save_path: Path where the model checkpoint should be saved.
+        :param trackers: Dictionary for accumulating plotting metrics.
+        :param cumulative_episodes: Running count of total episodes trained.
+        :param cumulative_timesteps: Running count of total timesteps trained.
+        :param training_progress_list: History list used to prompt the LLM.
+        :return: A tuple (updated_cumulative_episodes, updated_cumulative_timesteps).
+        """
 
         episodes_per_llm_iter = config.llm_training_config.get(
             "episodes_per_iteration", 0
         )
 
-        # Initialize Trainer
         trainer = Trainer(
             env=env_class,
             env_config=config.env_config,
@@ -253,7 +316,6 @@ class TrainPPO:
             **config.llm_training_config,
         )
 
-        # Initialize LLM Handler with explicit settings
         llm_handler = LLMHandler(settings=config.llm_settings)
 
         desc = f"Trial {trial_number + 1}/{config.trials} (LLM)"
@@ -272,15 +334,12 @@ class TrainPPO:
                 "total_stages": config.llm_curriculum_iterations,
             }
 
-            try:
-                curriculum_params = llm_handler.generate_curriculum(context_data)
-            except Exception as e:
-                print(f"LLM Generation Failed in Trial {trial_number}: {e}")
-                # Fallback to base environment if LLM fails
-                curriculum_params = None
+            curriculum_params = llm_handler.generate_curriculum(context_data)
 
-            # If curriculum_params is None, trainer uses default config
-            train_output = trainer.train_model(curriculum_params, curriculum_params)
+            train_output = trainer.train_model(
+                curriculum_params=curriculum_params, 
+                base_params=config.env_config
+            )
 
             (
                 cumulative_episodes,
@@ -308,7 +367,22 @@ class TrainPPO:
         cumulative_timesteps: int,
         training_progress_list: List[Dict],
     ) -> Tuple[int, int]:
-        """Runs the standard (non-curriculum) training phase."""
+        """
+        Runs the standard (non-curriculum) training phase.
+
+        Trains the agent directly on the Target Task configuration for a set
+        number of iterations. Used for baselines or post-curriculum fine-tuning.
+
+        :param config: The experiment configuration object.
+        :param trial_number: The index of the current trial.
+        :param env_class: The class of the environment to instantiate.
+        :param model_save_path: Path where the model checkpoint should be saved.
+        :param trackers: Dictionary for accumulating plotting metrics.
+        :param cumulative_episodes: Running count of total episodes trained.
+        :param cumulative_timesteps: Running count of total timesteps trained.
+        :param training_progress_list: History list (updated but unused by logic here).
+        :return: A tuple (updated_cumulative_episodes, updated_cumulative_timesteps).
+        """
 
         std_config = config.standard_training_config or config.llm_training_config
         episodes_per_std_iter = std_config.get("episodes_per_iteration", 0)
@@ -320,7 +394,8 @@ class TrainPPO:
             seed=trial_number,
             **std_config,
         )
-        base_env_config = trainer.generate_environment()
+        
+        target_params = config.env_config
 
         desc = f"Trial {trial_number + 1}/{config.trials} (Standard)"
         for _ in tqdm(
@@ -329,7 +404,10 @@ class TrainPPO:
             position=trial_number,
             leave=True,
         ):
-            train_output = trainer.train_model(base_env_config, base_env_config)
+            train_output = trainer.train_model(
+                curriculum_params=target_params, 
+                base_params=target_params
+            )
 
             (
                 cumulative_episodes,
@@ -340,8 +418,8 @@ class TrainPPO:
                 cumulative_episodes,
                 cumulative_timesteps,
                 episodes_per_std_iter,
-                training_progress_list,  # Updates history, though AI won't use it in this phase
-                base_env_config,
+                training_progress_list,
+                target_params,
             )
 
         return cumulative_episodes, cumulative_timesteps
@@ -352,6 +430,14 @@ class TrainPPO:
     ) -> Tuple[List, List, List, List, List]:
         """
         Worker function for a single trial, executed in a separate process.
+
+        Orchestrates the sequence of training phases (LLM then Standard, or just Standard)
+        for one independent run.
+
+        :param trial_number: The unique ID for this trial.
+        :param config: The global experiment configuration.
+        :param save_path: Directory to save trial-specific artifacts.
+        :return: A tuple containing lists of (reward, timestep, success, x_episodes, x_timesteps).
         """
 
         trackers = {

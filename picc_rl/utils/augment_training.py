@@ -2,14 +2,20 @@
 
 """
 picc_rl.utils.augment_training
------------------------------
+==============================
+
 Utility to augment training from exported session data.
 
-Consumes JSON data containing 'stage_total_episodes' and 'stage_total_timesteps'.
-Generates .npz files containing:
-- 'reward', 'timestep', 'success': 1D arrays of final eval metrics.
-- 'x_axis_episode': 1D array of cumulative episodes.
-- 'x_axis_timestep': 1D array of cumulative timesteps.
+This script reads a user's training history and continues training for a specified
+number of additional episodes to reach a target total. It is useful for extending
+experiments to see if convergence occurs later.
+
+Output:
+    - **.npz files:** Arrays containing **Target Task** metrics (Reward, Success, Timesteps).
+    - **.pt files:** The updated PyTorch model checkpoint.
+
+.. module:: augment_training
+   :synopsis: CLI utility for extending RL training sessions offline.
 """
 
 import json
@@ -18,7 +24,7 @@ import argparse
 import math
 import os
 from datetime import datetime
-from typing import List, Optional, Union, Dict
+from typing import List, Optional
 from tqdm import tqdm
 import importlib
 
@@ -31,7 +37,14 @@ from picc_rl.learning.trainer import Trainer
 
 
 class AugmentConfig(BaseModel):
-    """Pydantic model for validating the YAML config file."""
+    """
+    Pydantic model for validating the YAML configuration file.
+    
+    :param env: The environment ID.
+    :param target_total_episodes: The desired total episode count (history + new).
+    :param experiment_results_paths: List of JSON files containing session history.
+    :param env_config: The **Target Task** configuration used for evaluation.
+    """
 
     env: str
     target_total_episodes: int
@@ -55,7 +68,14 @@ class AugmentConfig(BaseModel):
 
 
 class AugmentTraining:
+    """
+    Controller for the augmentation process.
+    """
+
     def __init__(self, config_path: str):
+        """
+        Initialize the augmentation run.
+        """
         with open(config_path, "r") as f:
             self.config = AugmentConfig(**yaml.safe_load(f))
 
@@ -79,9 +99,7 @@ class AugmentTraining:
                 print(f"Warning: Failed to send completion notification: {e}")
 
     def create_save_path(self) -> str:
-        """
-        Creates a unique directory for saving the results of this augmentation run.
-        """
+        """Creates a timestamped directory for results."""
         date_string = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         dir_name = f"{self.config.experiment_name}_{date_string}"
         save_path = os.path.join(self.config.test_storage, dir_name)
@@ -201,6 +219,9 @@ class AugmentTraining:
     def _process_history(stages: List[dict], base_config: Optional[List]) -> dict:
         """
         Aggregates historical performance metrics from a list of training stages.
+        Strictly enforces the new data schema (lists for Target Eval metrics).
+        
+        :raises KeyError: If ``target_eval_*`` keys are missing.
         """
         historical_rewards, historical_timesteps, historical_successes = [], [], []
 
@@ -211,25 +232,17 @@ class AugmentTraining:
 
         for count, stage in enumerate(stages):
             try:
-                stage_reward = stage.get("final_eval_reward")
-                stage_timestep = stage.get("final_eval_timesteps")
-                stage_success = stage.get("final_eval_success")
+                stage_reward = stage["target_eval_reward"][-1]
+                stage_success = stage["target_eval_success"][-1]
+                stage_timestep = stage["target_eval_timesteps"][-1]
 
-                # Fallback for stage totals if not pre-calculated (older data)
                 stage_total_timesteps = stage.get("stage_total_timesteps", 0)
                 stage_total_episodes = stage.get("stage_total_episodes", 0)
 
-                if stage_reward is None:
-                    # Try alternate key names from different export versions
-                    stage_reward = stage.get("reward")
-                    stage_timestep = stage.get("timesteps")
-                    # If still none, fail
-                    if stage_reward is None:
-                        raise KeyError(f"final_eval_reward (Stage {count})")
-
-            except KeyError as e:
+            except (KeyError, IndexError, TypeError) as e:
                 print(
-                    f"\n[Error] Historical data is malformed at stage {count}. Missing: {e}"
+                    f"\n[Error] Historical data is malformed at stage {count}. "
+                    f"Expected 'target_eval_*' lists. Error: {e}"
                 )
                 raise
 
@@ -265,8 +278,8 @@ class AugmentTraining:
     ):
         """
         Instantiates the Trainer, runs the augmentation loop, and saves the results.
+        Enforces use of Target Task metrics.
         """
-        # Output file named by SESSION ID
         output_path = os.path.join(save_path, f"session_{learning_id}_data.npz")
 
         episodes_to_run = config.target_total_episodes - history["total_episodes"]
@@ -312,7 +325,8 @@ class AugmentTraining:
             **run_config,
         )
 
-        base_env_config = history["base_config"]
+        curriculum_env_config = history["base_config"]
+        target_env_config = config.env_config
 
         new_rewards, new_timesteps, new_successes = [], [], []
         new_x_axis_episodes = []
@@ -330,28 +344,33 @@ class AugmentTraining:
         for _ in iteration_pbar:
             (
                 train_reward,
-                train_timesteps,
+                train_timesteps_list, 
                 train_success,
-                train_eval_rewards,
-                train_eval_timesteps,
-                train_eval_success,
-                final_eval_reward,
-                final_eval_timesteps,
-                final_eval_success,
+                stage_eval_rewards,
+                stage_eval_timesteps,
+                stage_eval_success,
+                target_eval_rewards,
+                target_eval_timesteps,
+                target_eval_successes,
                 iterations_taken,
                 checkpoint_path,
-            ) = trainer.train_model(base_env_config, base_env_config)
+            ) = trainer.train_model(
+                curriculum_params=curriculum_env_config,
+                base_params=target_env_config
+            )
 
-            new_rewards.append(final_eval_reward)
-            new_timesteps.append(final_eval_timesteps)
-            new_successes.append(final_eval_success)
+            new_rewards.extend(target_eval_rewards)
+            new_successes.extend(target_eval_successes)
+            new_timesteps.extend(target_eval_timesteps)
 
-            current_cumulative_episodes += iterations_taken * new_episodes_per_iteration
-            new_x_axis_episodes.append(current_cumulative_episodes)
+            num_points = len(target_eval_rewards)
+            for i in range(num_points):
+                current_cumulative_episodes += new_episodes_per_iteration
+                new_x_axis_episodes.append(current_cumulative_episodes)
 
-            stage_total_timesteps = sum(train_timesteps)
-            current_cumulative_timesteps += stage_total_timesteps
-            new_x_axis_timesteps.append(current_cumulative_timesteps)
+                steps_this_iter = train_timesteps_list[i] * new_episodes_per_iteration
+                current_cumulative_timesteps += int(steps_this_iter)
+                new_x_axis_timesteps.append(current_cumulative_timesteps)
 
         new_x_axis_array_episodes = np.array(new_x_axis_episodes, dtype=int)
         new_x_axis_array_timesteps = np.array(new_x_axis_timesteps, dtype=int)

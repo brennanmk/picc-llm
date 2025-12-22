@@ -93,7 +93,6 @@ html, body {
 .panel-preview {
     grid-column: 2;
     grid-row: 1;
-    background: #212121; /* Dark background for the game world */
     padding: 20px;
     display: flex;
     justify-content: center;
@@ -117,10 +116,17 @@ html, body {
     display: grid;
     width: 100%;
     height: 100%;
-    /* Grid template rows/cols are set by JS */
-    gap: 1px; /* Slight gap for grid lines */
-    background: #333;
-    border: 2px solid #555;
+    
+    gap: 0; 
+    background: transparent; 
+    
+    border-top: 1px solid #333;
+    border-left: 1px solid #333;
+    
+    border-right: none;
+    border-bottom: none;
+
+    box-sizing: border-box; 
 }
 
 .env-cell {
@@ -131,6 +137,11 @@ html, body {
     width: 100%;
     height: 100%;
     user-select: none;
+    
+    border-right: 1px solid #333;
+    border-bottom: 1px solid #333;
+    
+    box-sizing: border-box; 
 }
 
 .env-cell.blocked {
