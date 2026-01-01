@@ -27,16 +27,20 @@ Output:
 
 from picc_rl.llm.llm_handler import LLMHandler, format_curriculum_history
 from picc_rl.learning.trainer import Trainer
+from picc_rl.utils.training_utils import (
+    process_training_iteration_to_dict,
+    load_environment_class,
+    create_experiment_directory,
+    send_completion_notification,
+)
+
 import numpy as np
 import torch.multiprocessing as mp
-from datetime import datetime
 import os
-import requests
 import yaml
 import argparse
 from typing import Optional, List, Tuple, Dict, Any
 from pydantic import BaseModel
-import importlib
 from tqdm import tqdm
 
 
@@ -75,7 +79,7 @@ class TrainPPOConfig(BaseModel):
     standard_training_iterations: int = 0
 
 
-class TrainPPO:
+class TrainBaseline:
     """
     Manages the setup and execution of a PPO training experiment.
     """
@@ -92,7 +96,11 @@ class TrainPPO:
         self.config = TrainPPOConfig(**conf_dict)
         self._validate_config()
 
-        self.save_path = self._create_save_path()
+        self.save_path = create_experiment_directory(
+            self.config.test_storage,
+            self.config.experiment_name or self.config.env
+        )
+        
         config_save_path = os.path.join(self.save_path, "config.yaml")
         with open(config_save_path, "w") as f:
             yaml.dump(self.config.model_dump(), f, indent=4, sort_keys=False)
@@ -118,16 +126,11 @@ class TrainPPO:
 
         print(f"Completed, results in {self.save_path}")
 
-        if self.config.post_complete is not None:
-            try:
-                requests.post(
-                    self.config.post_complete,
-                    data=f"Training complete --- see {self.save_path}".encode(
-                        encoding="utf-8"
-                    ),
-                )
-            except Exception as e:
-                print(f"Failed to send post_complete notification: {e}")
+        send_completion_notification(
+            self.config.post_complete,
+            self.config.experiment_name or self.config.env,
+            self.save_path
+        )
 
     def _validate_config(self):
         """Validates the loaded configuration to ensure logical consistency."""
@@ -170,14 +173,6 @@ class TrainPPO:
                     "Config Error: No valid training config found for standard training."
                 )
 
-    def _create_save_path(self) -> str:
-        """Creates a unique directory for storing experiment results."""
-        date_string = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-        dir_name = f"{self.config.experiment_name or self.config.env}_{date_string}"
-        save_path = os.path.join(self.config.test_storage, dir_name)
-        os.makedirs(save_path, exist_ok=True)
-        return save_path
-
     def _start_experiment(
         self,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -189,7 +184,7 @@ class TrainPPO:
         mp.set_start_method("spawn", force=True)
         with mp.Pool(self.config.number_of_procs) as pool:
             data = [(i, self.config, self.save_path) for i in range(self.config.trials)]
-            process_data = pool.starmap(TrainPPO.run_trial, data)
+            process_data = pool.starmap(TrainBaseline.run_trial, data)
 
         reward_sum = [data[0] for data in process_data]
         timesteps = [data[1] for data in process_data]
@@ -205,76 +200,6 @@ class TrainPPO:
             np.array(x_axis_episodes_data),
             np.array(x_axis_timesteps_data),
         )
-
-    @staticmethod
-    def _process_training_iteration(
-        train_model_output: tuple,
-        trackers: Dict[str, List],
-        cumulative_episodes: int,
-        cumulative_timesteps: int,
-        episodes_per_iter: int,
-        training_progress_list: List[Dict],
-        curriculum_params: Dict,
-    ) -> Tuple[int, int]:
-        """
-        Helper function to unpack Trainer results, update trackers, and maintain history.
-        
-        Crucially, this extracts metrics from the **Target Task** evaluation lists
-        to ensure the recorded history reflects progress toward the final goal.
-
-        :param train_model_output: The 11-element tuple returned by ``Trainer.train_model``.
-        :param trackers: Dictionary of lists for storing plotting data (reward, success, etc.).
-        :param cumulative_episodes: Total episodes trained so far in this trial.
-        :param cumulative_timesteps: Total environment steps taken so far.
-        :param episodes_per_iter: Number of episodes per training iteration (config).
-        :param training_progress_list: List of stage dictionaries used as context for the LLM.
-        :param curriculum_params: The configuration used for the current training stage.
-        :return: A tuple (updated_cumulative_episodes, updated_cumulative_timesteps).
-        """
-        (
-            train_reward,
-            train_timesteps_list,
-            train_success,
-            stage_eval_rewards,
-            stage_eval_timesteps,
-            stage_eval_success,
-            target_eval_rewards,
-            target_eval_timesteps,
-            target_eval_successes,
-            iterations_taken,
-            checkpoint_path,
-        ) = train_model_output
-
-        trackers["reward"].extend(target_eval_rewards)
-        trackers["success"].extend(target_eval_successes)
-        trackers["timestep"].extend(target_eval_timesteps)
-
-        num_points = len(target_eval_rewards)
-        
-        for i in range(num_points):
-            cumulative_episodes += episodes_per_iter
-            trackers["x_axis_episodes"].append(cumulative_episodes)
-
-            steps_this_iter = train_timesteps_list[i] * episodes_per_iter
-            cumulative_timesteps += int(steps_this_iter)
-            trackers["x_axis_timesteps"].append(cumulative_timesteps)
-
-        training_progress_list.append(
-            {
-                "curriculum_params": curriculum_params,
-                "train_reward": train_reward,
-                "train_timesteps": train_timesteps_list,
-                "train_success": train_success,
-                "stage_eval_reward": stage_eval_rewards,
-                "stage_eval_timesteps": stage_eval_timesteps,
-                "stage_eval_success": stage_eval_success,
-                "target_eval_reward": target_eval_rewards,
-                "target_eval_timesteps": target_eval_timesteps,
-                "target_eval_success": target_eval_successes,
-            }
-        )
-
-        return cumulative_episodes, cumulative_timesteps
 
     @staticmethod
     def _run_llm_training_phase(
@@ -341,18 +266,35 @@ class TrainPPO:
                 base_params=config.env_config
             )
 
-            (
-                cumulative_episodes,
-                cumulative_timesteps,
-            ) = TrainPPO._process_training_iteration(
+            # Use shared utility function
+            cumulative_episodes, cumulative_timesteps = process_training_iteration_to_dict(
                 train_output,
                 trackers,
                 cumulative_episodes,
                 cumulative_timesteps,
-                episodes_per_llm_iter,
-                training_progress_list,
-                curriculum_params,
+                episodes_per_llm_iter
             )
+            
+            # Store history for LLM context
+            (
+                train_reward, train_timesteps_list, train_success,
+                stage_eval_rewards, stage_eval_timesteps, stage_eval_success,
+                target_eval_rewards, target_eval_timesteps, target_eval_successes,
+                iterations_taken, checkpoint_path
+            ) = train_output
+            
+            training_progress_list.append({
+                "curriculum_params": curriculum_params,
+                "train_reward": train_reward,
+                "train_timesteps": train_timesteps_list,
+                "train_success": train_success,
+                "stage_eval_reward": stage_eval_rewards,
+                "stage_eval_timesteps": stage_eval_timesteps,
+                "stage_eval_success": stage_eval_success,
+                "target_eval_reward": target_eval_rewards,
+                "target_eval_timesteps": target_eval_timesteps,
+                "target_eval_success": target_eval_successes,
+            })
 
         return cumulative_episodes, cumulative_timesteps
 
@@ -409,18 +351,35 @@ class TrainPPO:
                 base_params=target_params
             )
 
-            (
-                cumulative_episodes,
-                cumulative_timesteps,
-            ) = TrainPPO._process_training_iteration(
+            # Use shared utility function
+            cumulative_episodes, cumulative_timesteps = process_training_iteration_to_dict(
                 train_output,
                 trackers,
                 cumulative_episodes,
                 cumulative_timesteps,
-                episodes_per_std_iter,
-                training_progress_list,
-                target_params,
+                episodes_per_std_iter
             )
+            
+            # Store history (for consistency, though not used in standard mode)
+            (
+                train_reward, train_timesteps_list, train_success,
+                stage_eval_rewards, stage_eval_timesteps, stage_eval_success,
+                target_eval_rewards, target_eval_timesteps, target_eval_successes,
+                iterations_taken, checkpoint_path
+            ) = train_output
+            
+            training_progress_list.append({
+                "curriculum_params": target_params,
+                "train_reward": train_reward,
+                "train_timesteps": train_timesteps_list,
+                "train_success": train_success,
+                "stage_eval_reward": stage_eval_rewards,
+                "stage_eval_timesteps": stage_eval_timesteps,
+                "stage_eval_success": stage_eval_success,
+                "target_eval_reward": target_eval_rewards,
+                "target_eval_timesteps": target_eval_timesteps,
+                "target_eval_success": target_eval_successes,
+            })
 
         return cumulative_episodes, cumulative_timesteps
 
@@ -455,18 +414,14 @@ class TrainPPO:
         cumulative_timesteps = 0
 
         model_save_path = f"{save_path}/test_{trial_number}.pt"
-        env_class = (
-            config.env
-            if config.env_path is None
-            else importlib.import_module(config.env_path).envs[config.env]
-        )
+        env_class = load_environment_class(config.env, config.env_path)
 
         # LLM Curriculum Phase
         if config.llm_curriculum_iterations and config.llm_curriculum_iterations > 0:
             (
                 cumulative_episodes,
                 cumulative_timesteps,
-            ) = TrainPPO._run_llm_training_phase(
+            ) = TrainBaseline._run_llm_training_phase(
                 config,
                 trial_number,
                 env_class,
@@ -482,7 +437,7 @@ class TrainPPO:
             (
                 cumulative_episodes,
                 cumulative_timesteps,
-            ) = TrainPPO._run_standard_training_phase(
+            ) = TrainBaseline._run_standard_training_phase(
                 config,
                 trial_number,
                 env_class,
@@ -511,4 +466,4 @@ if __name__ == "__main__":
         "--config", required=True, help="Path to the YAML configuration file."
     )
     args = parser.parse_args()
-    TrainPPO(args.config)
+    TrainBaseline(args.config)

@@ -15,7 +15,7 @@ from picc_rl.app.learning_handler import LearningHandler
 from picc_rl.llm.llm_handler import (
     LLMHandler,
     format_curriculum_history,
-    CurriculumParameters 
+    CurriculumParameters,
 )
 
 log = app.logger
@@ -35,7 +35,7 @@ def generate_curriculum_task(user_index: int) -> None:
 
     :param int user_index: The unique integer identifier for the user (primary key).
     :return: None
-    
+
     :raises Exception: Catches general exceptions during the generation process.
                        On failure, logs the error and resets the user's ``in_progress`` status
                        so they are not locked out of the interface.
@@ -51,16 +51,16 @@ def generate_curriculum_task(user_index: int) -> None:
 
             if app.config.get("APP_DEBUG_MODE", False):
                 log.info(f"User {user_index}: Debug Mode ON. Skipping LLM generation.")
-                
+
                 debug_config = CurriculumParameters(
                     reasoning="[DEBUG] Auto-generated placeholder config.",
                     width=10,
                     height=10,
-                    objects={}
+                    objects={},
                 )
-                
+
                 params = debug_config.model_dump()
-                
+
             else:
                 history_str = format_curriculum_history(model.training_progress)
 
@@ -76,12 +76,14 @@ def generate_curriculum_task(user_index: int) -> None:
             handler.learner.active_environment_config = params
             handler.learner.in_progress = False
             db.session.commit()
-            
-            log.debug(f"User {user_index}: AI generation complete (Debug={app.config.get('APP_DEBUG_MODE')}).")
+
+            log.debug(
+                f"User {user_index}: AI generation complete (Debug={app.config.get('APP_DEBUG_MODE')})."
+            )
 
         except Exception as e:
             log.error(f"AI Task Failed for User {user_index}: {e}", exc_info=True)
-            
+
             handler = LearningHandler(user_index)
             if handler.learner:
                 handler.learner.in_progress = False
@@ -89,29 +91,26 @@ def generate_curriculum_task(user_index: int) -> None:
 
 
 @celery_app.task
-def run_training_task(user_index: int, curriculum_params: dict) -> None:
+def run_training_task(user_index: int, user_params) -> None:
     """
     Background task to execute the Reinforcement Learning training loop.
 
-    :param int user_index: The unique integer identifier for the user (primary key).
-    :param dict curriculum_params: A dictionary containing the environment configuration.
-                                   Expected keys include ``width``, ``height``, and ``objects``.
-    :return: None
+    Handler determines base_params internally from learner state or config.
 
-    :raises Exception: Catches any exception during the training process (e.g., CUDA errors,
-                       environment generation failures). On failure, logs the error and
-                       sets the user's ``failure_state`` flag to True, redirecting them
-                       to the error page on their next poll.
+    :param user_index: The unique integer identifier for the user.
+    :param user_params: Curriculum/stage parameters (any format).
     """
-    log.debug(
-        f"Celery task for user {user_index}: Starting training with curriculum parameters."
-    )
+    log.debug(f"Celery task for user {user_index}: Starting training.")
+
     try:
         handler = LearningHandler(user_index)
-        
+
         if not handler.complete and handler.trainer is not None:
-            handler.train(curriculum_params)
-            log.debug(f"Celery task for user {user_index}: Training finished successfully.")
+            # Handler gets base_params internally
+            handler.train(user_params)
+            log.debug(
+                f"Celery task for user {user_index}: Training finished successfully."
+            )
         else:
             log.warning(
                 f"Celery task for user {user_index}: Aborted. Handler complete or trainer is None."
@@ -122,7 +121,7 @@ def run_training_task(user_index: int, curriculum_params: dict) -> None:
         if failure_handler.learner:
             failure_handler.learner.failure_state = True
             db.session.commit()
-            
+
         log.error(
             f"Celery task for user {user_index}: Critical training error: {e}",
             exc_info=True,
