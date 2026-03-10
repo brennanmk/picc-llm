@@ -26,7 +26,7 @@ if [ ! -f "$DEPS_INSTALLED_MARKER" ]; then
             echo "Python virtual environment activated for install."
 
             pip install --upgrade pip
-            cd /picc_rl/
+            cd /picc_llm/
             find . -name "requirements.txt" -print0 | while IFS= read -r -d $'\0' file; do
                 echo "Found requirements: $file"
                 pip install -r "$file"
@@ -53,8 +53,8 @@ source "$VENV_PATH/bin/activate"
 
 echo "Python virtual environment is active."
 
-cd /picc_rl/
-echo "Changed working directory to /picc_rl/"
+cd /picc_llm/
+echo "Changed working directory to /picc_llm/"
 
 echo "Waiting for database to come alive..."
 until nc -z db 3306; do
@@ -62,11 +62,15 @@ until nc -z db 3306; do
 done
 echo "Database connected"
 
-if [[ "${RESET_DB:-}" =~ ^(true|1|yes)$ ]]; then
-  python3 -m picc_rl.app.utils.db_utils --mode 'reset'
-else
-  python3 -m picc_rl.app.utils.db_utils --mode 'create_if_empty'
-fi
+DB_LOCK_FILE="$VENV_PATH/db_setup.lock"
+(
+    flock -x 201
+    if [[ "${RESET_DB:-}" =~ ^(true|1|yes)$ ]]; then
+      python3 -m picc_llm.app.utils.db_utils --mode 'reset'
+    else
+      python3 -m picc_llm.app.utils.db_utils --mode 'create_if_empty'
+    fi
+) 201>"$DB_LOCK_FILE"
 
 echo "Database configured"
 

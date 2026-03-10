@@ -65,7 +65,7 @@ fi
 # --- Run Offline Training ---
 log "Running offline training..."
 
-OFFLINE_OUTPUT=$(PYTHONPATH=$PYTHONPATH:$PROJECT_ROOT python3 -u -m picc_rl.utils.run_offline_training --config "$OFFLINE_CONFIG" 2>&1 | tee /dev/tty)
+OFFLINE_OUTPUT=$(PYTHONPATH=$PYTHONPATH:$PROJECT_ROOT python3 -u -m picc_llm.utils.run_offline_training --config "$OFFLINE_CONFIG" 2>&1 | tee /dev/tty)
 
 # Extract the JSON path from the output
 JSON_PATH=$(echo "$OFFLINE_OUTPUT" | grep "Consolidated JSON results saved to:" | awk -F': ' '{print $2}' | xargs)
@@ -90,7 +90,7 @@ yq e ".experiment_results_paths = [\"$JSON_PATH\"]" \
 
 log "Running augment training..."
 
-AUGMENT_OUTPUT=$(PYTHONPATH=$PYTHONPATH:$PROJECT_ROOT python3 -u -m picc_rl.utils.augment_training --config "$AUGMENT_CONFIG_FINAL" 2>&1 | tee /dev/tty)
+AUGMENT_OUTPUT=$(PYTHONPATH=$PYTHONPATH:$PROJECT_ROOT python3 -u -m picc_llm.utils.augment_training --config "$AUGMENT_CONFIG_FINAL" 2>&1 | tee /dev/tty)
 
 # Extract the output directory path
 AUGMENT_DIR=$(echo "$AUGMENT_OUTPUT" | grep "Results saved in" | awk -F' in ' '{print $2}' | xargs)
@@ -105,7 +105,7 @@ log "Augment training complete. NPZ files in: $AUGMENT_DIR"
 # --- Run NPZ Averaging ---
 log "Running NPZ averaging..."
 
-PYTHONPATH=$PYTHONPATH:$PROJECT_ROOT python3 -u -m picc_rl.utils.average_npz_files \
+PYTHONPATH=$PYTHONPATH:$PROJECT_ROOT python3 -u -m picc_llm.utils.average_npz_files \
     --inputs "$AUGMENT_DIR"/*.npz \
     --output "$FINAL_AVERAGE_NPZ"
 

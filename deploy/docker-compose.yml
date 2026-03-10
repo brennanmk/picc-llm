@@ -56,7 +56,7 @@ services:
       context: .
       dockerfile: Dockerfile
     volumes:
-      - ../:/picc_rl/
+      - ../:/picc_llm/
       - venv_cache:/opt/venv
     depends_on:
       db:
@@ -65,8 +65,10 @@ services:
         condition: service_healthy
     env_file:
       - .env.docker
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     entrypoint: ["/usr/local/bin/docker-entrypoint.sh"]
-    command: ["gunicorn", "picc_rl.app:app", "--reload", "--workers", "1", "--bind", "0.0:8000"]
+    command: ["gunicorn", "picc_llm.app:app", "--reload", "--workers", "1", "--bind", "0.0:8000"]
 
   worker:
     <<: *common-limits
@@ -74,7 +76,7 @@ services:
       context: .
       dockerfile: Dockerfile
     volumes:
-      - ../:/picc_rl/
+      - ../:/picc_llm/
       - venv_cache:/opt/venv
     env_file:
       - .env.docker
@@ -83,8 +85,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     entrypoint: ["/usr/local/bin/docker-entrypoint.sh"]
-    command: ["celery", "-A", "picc_rl.app.celery_app", "worker", "--loglevel=info"]
+    command: ["celery", "-A", "picc_llm.app.celery_app", "worker", "--loglevel=info"]
 
 volumes:
   db_data:

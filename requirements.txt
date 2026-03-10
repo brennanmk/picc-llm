@@ -15,8 +15,7 @@ tqdm
 requests
 dotenv
 langchain
-langchain-ollama
-ollama
+langchain-groq
 pyyaml
 numba
 celery[redis]

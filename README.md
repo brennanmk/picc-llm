@@ -31,7 +31,7 @@ Sensitive data and environment-specific settings (like database credentials and 
 After copying the appropriate file, open it and fill in the required values.
 
 ### Application Configuration (config.py)
-Less frequently changed settings, such as the order of experiments presented in the web application, are defined directly in the file `picc_rl/app/config.py`. You can edit this file to change these stable, application-level configurations.
+Less frequently changed settings, such as the order of experiments presented in the web application, are defined directly in the file `picc_llm/app/config.py`. You can edit this file to change these stable, application-level configurations.
 
 ---
 
@@ -101,7 +101,7 @@ This section contains instructions for installing and running PICC-RL manually. 
     * **venv**: Create and source a virtual environment (`python3 -m venv .venv`, `source .venv/bin/activate`), then install dependencies with `pip install -r requirements.txt`.
 3.  **Running the Web Application**: With your environment activated, start the development server.
     ```bash
-    python3 -m flask --app picc_rl/app run
+    python3 -m flask --app picc_llm/app run
     ```
 
 ---
@@ -116,7 +116,7 @@ To run a single experiment for testing or debugging, you can directly execute th
 1.  Ensure your manual environment is set up and your virtual environment is activated.
 2.  Run the training script using the following command, pointing to a configuration file:
     ```bash
-    python3 -m picc_rl.utils.train_ppo.py --config path/to/your/config.json
+    python3 -m picc_llm.utils.train_ppo.py --config path/to/your/config.json
     ```
     An example experiment configuration file is provided at `examples/example_config.json`. We recommend you copy and modify it for your experiments.
 

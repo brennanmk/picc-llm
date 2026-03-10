@@ -2,7 +2,7 @@
   description = "PICC Flake";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
   };
 
   outputs = { self, nixpkgs }:
@@ -20,24 +20,23 @@
           cmake
           libmysqlclient
 
-          python311
-          python311Packages.black
-          python311Packages.python-lsp-server
-          python311Packages.pyflakes
-          python311Packages.epc
-          python311Packages.orjson
-          python311Packages.sexpdata
-          python311Packages.six
-          python311Packages.setuptools
-          python311Packages.paramiko
-          python311Packages.rapidfuzz
-          python311Packages.numpy
-          python311Packages.mysqlclient
-          python311Packages.watchdog
+          python3
+          python3Packages.black
+          python3Packages.python-lsp-server
+          python3Packages.pyflakes
+          python3Packages.epc
+          python3Packages.orjson
+          python3Packages.sexpdata
+          python3Packages.six
+          python3Packages.setuptools
+          python3Packages.paramiko
+          python3Packages.rapidfuzz
+          python3Packages.numpy
+          python3Packages.mysqlclient
+          python3Packages.watchdog
         ];
 
         shellHook = ''
-          export LD_LIBRARY_PATH="/run/opengl-driver/lib:${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH"
           if [ -d ".venv" ]; then
             source .venv/bin/activate
           fi

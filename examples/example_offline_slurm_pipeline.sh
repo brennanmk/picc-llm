@@ -35,7 +35,7 @@ export PYTHONUNBUFFERED=1
 # Go to the project root, as in your example
 cd /cluster/tufts/sinapovlab/bmille12/picc-rl
 
-# Add project root to PYTHONPATH so 'import picc_rl' works
+# Add project root to PYTHONPATH so 'import picc_llm' works
 export PYTHONPATH=$PYTHONPATH:$(pwd)
 
 # Exit immediately if any command fails
@@ -69,7 +69,7 @@ log "Using input config: $OFFLINE_CONFIG"
 
 # --- Run Offline Training ---
 log "Running offline training..."
-OFFLINE_OUTPUT=$(python3 -u -m picc_rl.utils.run_offline_training --config "$OFFLINE_CONFIG" 2>&1)
+OFFLINE_OUTPUT=$(python3 -u -m picc_llm.utils.run_offline_training --config "$OFFLINE_CONFIG" 2>&1)
 echo "$OFFLINE_OUTPUT"
 
 JSON_PATH=$(echo "$OFFLINE_OUTPUT" | grep "Consolidated JSON results saved to:" | awk -F': ' '{print $2}' | xargs)
@@ -87,7 +87,7 @@ yq ".experiment_results_paths = [\"$JSON_PATH\"]" \
    "$AUGMENT_CONFIG_TEMPLATE" > "$AUGMENT_CONFIG_FINAL"
 
 log "Running augment training (this may take a while)..."
-AUGMENT_OUTPUT=$(python3 -u -m picc_rl.utils.augment_training --config "$AUGMENT_CONFIG_FINAL" 2>&1)
+AUGMENT_OUTPUT=$(python3 -u -m picc_llm.utils.augment_training --config "$AUGMENT_CONFIG_FINAL" 2>&1)
 echo "$AUGMENT_OUTPUT"
 
 AUGMENT_DIR=$(echo "$AUGMENT_OUTPUT" | grep "Results saved in" | awk -F' in ' '{print $2}' | xargs)
@@ -101,7 +101,7 @@ log "Augment training complete. NPZ files in: $AUGMENT_DIR"
 
 # --- Run NPZ Averaging ---
 log "Running NPZ averaging..."
-python3 -u -m picc_rl.utils.average_npz_results \
+python3 -u -m picc_llm.utils.average_npz_results \
     --inputs "$AUGMENT_DIR"/*.npz \
     --output "$FINAL_AVERAGE_NPZ"
 

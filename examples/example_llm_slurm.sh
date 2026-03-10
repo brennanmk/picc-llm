@@ -52,6 +52,6 @@ cd ~/picc-rl
 CONFIG_FILE="/cluster/home/bmille12/tests/${SLURM_ARRAY_TASK_ID}.json"
 echo "Using configuration file: ${CONFIG_FILE}"
 
-python3 -m picc_rl.utils.train_ppo_llm --config "${CONFIG_FILE}"
+python3 -m picc_llm.utils.train_ppo_llm --config "${CONFIG_FILE}"
 
 echo "Finished at: $(date)"

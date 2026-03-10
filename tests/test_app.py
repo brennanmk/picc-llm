@@ -7,15 +7,15 @@ with minimal views.
 
 from flask import Flask, render_template, jsonify, request
 from flask_cors import CORS
-from picc_rl.environments.micro_minecraft.micro_minecraft import MicroMinecraft
-from picc_rl.environments.micro_minecraft.micro_minecraft import instructions
+from picc_llm.environments.micro_minecraft.micro_minecraft import MicroMinecraft
+from picc_llm.environments.micro_minecraft.micro_minecraft import instructions
 import time
 from datetime import datetime
 
 app = Flask(
     __name__,
-    template_folder="../picc_rl/app/templates",
-    static_folder="../picc_rl/app/static",
+    template_folder="../picc_llm/app/templates",
+    static_folder="../picc_llm/app/static",
 )
 
 CORS(app)
