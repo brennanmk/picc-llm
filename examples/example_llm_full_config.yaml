@@ -1,0 +1,83 @@
+# LLM Full Curriculum — 15x15 target grid
+#
+# The LLM generates ALL stages upfront in a single call (no feedback),
+# then the trainer executes them sequentially.  After curriculum stages
+# complete, augmentation continues training on random full-task layouts
+# to 500k episodes.  Useful for comparing against llm_interactive to
+# isolate the effect of the feedback loop.
+#
+# Usage:
+#   python3 -m picc_llm.utils.train_curriculum --config examples/example_llm_full_config.yaml
+
+experiment_name: llm_full_15x15
+test_storage: curriculum_experiments
+number_of_procs: 10
+post_complete: null
+
+env: minecraft
+env_config:
+    grid:
+        height: 15
+        width: 15
+    lidar:
+        range: 6
+env_path: null
+
+mode: llm_full
+total_stages: 5
+num_sessions: 10
+runs_per_session: 3
+
+# LLM connection — prompts auto-injected from DEFAULT_PROMPTS when omitted
+llm_settings:
+    connection:
+        model: openai/gpt-oss-120b
+        api_key: "${GROQ_API_KEY}"
+        temperature: 0.7
+
+curriculum_training_config:
+    episodes_per_evaluation: 10
+    episodes_per_iteration: 50
+    train_until_stable: true
+    max_stability_training_iterations: 1000
+    stability_delta_threshold: 15.0
+    stability_check_window: 10
+    min_stability_proportion: 0.9
+    target_episodes: 100000
+    decay_lr: false
+    train_mode: AUGMENTED
+    eval_mode: AUGMENTED
+    max_episode_len: 500
+    update_frequency: 1600
+    lr_actor: 0.0001
+    lr_critic: 0.001
+    gamma: 0.99
+    K_epochs: 10
+    eps_clip: 0.2
+    ent_coef: 0.02
+
+augment_training_config:
+    episodes_per_evaluation: 10
+    episodes_per_iteration: 50
+    train_mode: RANDOM
+    eval_mode: RANDOM
+    decay_lr: true
+    min_lr_fraction: 0.3
+    decay_ent: true
+    min_ent_fraction: 0.1
+    max_episode_len: 500
+    update_frequency: 1600
+    lr_actor: 0.0001
+    lr_critic: 0.001
+    gamma: 0.99
+    K_epochs: 10
+    eps_clip: 0.2
+    ent_coef: 0.02
+
+max_total_episodes: 500000
+curriculum_decay_scope: none
+augment_decay_scope: global
+
+convergence_reward_threshold: 0.95
+convergence_check_window: 20
+convergence_delta_threshold: 15.0

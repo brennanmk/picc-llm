@@ -1,14 +1,22 @@
 x-resource-limits: &common-limits
   cpuset: ${CPU_SET}
   mem_limit: ${MEM_LIMIT}
- 
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
 services:
   db:
     <<: *common-limits
     image: mysql:8.0
+    logging: *default-logging
     volumes:
       - db_data:/var/lib/mysql
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./mysql/my.cnf:/etc/mysql/conf.d/custom.cnf
     env_file:
       - .env.docker
     ports:
@@ -32,6 +40,7 @@ services:
   redis:
     <<: *common-limits
     image: redis:alpine
+    logging: *default-logging
     volumes:
       - redis_data:/data
     healthcheck:
@@ -42,6 +51,7 @@ services:
 
   nginx:
     image: nginx:1.25-alpine
+    logging: *default-logging
     ports:
       - "8000:80"
     volumes:
@@ -55,6 +65,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    logging: *default-logging
     volumes:
       - ../:/picc_llm/
       - venv_cache:/opt/venv
@@ -75,6 +86,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    logging: *default-logging
     volumes:
       - ../:/picc_llm/
       - venv_cache:/opt/venv

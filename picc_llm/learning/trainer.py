@@ -478,6 +478,15 @@ class Trainer:
                 self._checkpoint_dir, f"model_iter_{self._training_iteration}.pt"
             )
             self._ppo_agent.save(checkpoint_path)
+
+            # Clean up previous iteration checkpoint to avoid unbounded disk usage
+            if self._training_iteration > 0:
+                prev_checkpoint = os.path.join(
+                    self._checkpoint_dir,
+                    f"model_iter_{self._training_iteration - 1}.pt",
+                )
+                if os.path.isfile(prev_checkpoint):
+                    os.remove(prev_checkpoint)
         else:
             checkpoint_path = None
 

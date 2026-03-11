@@ -68,6 +68,7 @@ class PromptConfig(BaseModel):
     system_prompt: str
     initial_pipeline: List[PipelineStep]
     continuous_pipeline: List[PipelineStep]
+    full_curriculum_pipeline: Optional[List[PipelineStep]] = None
 
 
 class LLMSettings(BaseModel):
@@ -82,6 +83,21 @@ class CurriculumParameters(BaseModel):
     height: int = Field(ge=6, le=15, description="Grid height.")
     objects: Dict[str, int] = Field(description="Map of object names to counts.")
     rewards: Dict[str, str] = Field(description="Map of object names to reward tiers (none/small/medium/large).")
+
+
+class CurriculumStage(BaseModel):
+    """A single stage within a full curriculum."""
+    reasoning: str = Field(description="Explanation of the design choices for this stage.")
+    width: int = Field(ge=6, le=15, description="Grid width.")
+    height: int = Field(ge=6, le=15, description="Grid height.")
+    objects: Dict[str, int] = Field(description="Map of object names to counts.")
+    rewards: Dict[str, str] = Field(description="Map of object names to reward tiers (none/small/medium/large).")
+
+
+class FullCurriculumParameters(BaseModel):
+    """Output schema for generating an entire curriculum in one shot."""
+    overall_reasoning: str = Field(description="High-level explanation of the full curriculum design strategy.")
+    stages: List[CurriculumStage] = Field(description="Ordered list of curriculum stage configurations.")
 
 
 # --- Main Handler ---
@@ -128,6 +144,8 @@ class LLMHandler:
             temperature=conn.temperature,
         )
         self._structured = self._chat.with_structured_output(CurriculumParameters)
+        if self.conf.prompts.full_curriculum_pipeline:
+            self._structured_full = self._chat.with_structured_output(FullCurriculumParameters)
 
     def _select_pipeline(self, current_stage: int) -> List[PipelineStep]:
         """Selects pipeline based on stage number."""
@@ -188,3 +206,60 @@ class LLMHandler:
         }
 
         return res.model_dump()
+
+    def generate_full_curriculum(self, context_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Generate an entire curriculum (all stages) in a single LLM call.
+
+        Uses the ``full_curriculum_pipeline`` from prompts config.
+
+        :param context_data: Dict with keys ``current_stage`` (always 1),
+                             ``total_stages`` (int).
+        :return: List of dicts, each with keys: width, height, objects, rewards, reasoning.
+        """
+        if not self.conf.prompts.full_curriculum_pipeline:
+            raise ValueError(
+                "LLM prompts config missing 'full_curriculum_pipeline'. "
+                "Required for llm_full mode."
+            )
+
+        msgs = [("system", self.conf.prompts.system_prompt.format(**context_data))]
+        pipeline = self.conf.prompts.full_curriculum_pipeline
+
+        input_tokens = 0
+        output_tokens = 0
+
+        def _accumulate(response) -> None:
+            nonlocal input_tokens, output_tokens
+            usage = getattr(response, "usage_metadata", None)
+            if usage:
+                input_tokens += usage.get("input_tokens", 0)
+                output_tokens += usage.get("output_tokens", 0)
+
+        # Run CoT steps (all but last)
+        for step in pipeline[:-1]:
+            log.debug(f"Executing LLM Step: {step.name}")
+            user_msg = step.prompt.format(**context_data)
+            msgs.append(("human", user_msg))
+
+            resp = self._chat.invoke(msgs)
+            _accumulate(resp)
+            msgs.append(("ai", resp.content))
+
+        # Run final structured output step
+        final_step = pipeline[-1]
+        log.debug(f"Executing Final LLM Step: {final_step.name}")
+
+        user_msg = final_step.prompt.format(**context_data)
+        msgs.append(("human", user_msg))
+
+        res = self._structured_full.invoke(msgs)
+        _accumulate(res)
+
+        self.last_token_usage = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        }
+
+        return [stage.model_dump() for stage in res.stages]

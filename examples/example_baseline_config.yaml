@@ -1,0 +1,47 @@
+# Baseline Training — 15x15 target grid
+#
+# No curriculum — trains directly on randomly generated full-task
+# environments for the entire episode budget.  Serves as the control
+# condition against curriculum-based methods.
+#
+# Usage:
+#   python3 -m picc_llm.utils.train_baseline --config examples/example_baseline_config.yaml
+
+experiment_name: baseline_15x15
+test_storage: baseline_experiments
+trials: 30
+number_of_procs: 10
+post_complete: null
+
+env: minecraft
+env_config:
+    grid:
+        height: 15
+        width: 15
+    lidar:
+        range: 6
+env_path: null
+
+max_total_episodes: 500000
+
+training_config:
+    episodes_per_evaluation: 10
+    episodes_per_iteration: 50
+    train_mode: RANDOM
+    eval_mode: RANDOM
+    decay_lr: true
+    min_lr_fraction: 0.3
+    decay_ent: true
+    min_ent_fraction: 0.1
+    max_episode_len: 500
+    update_frequency: 1600
+    lr_actor: 0.0001
+    lr_critic: 0.001
+    gamma: 0.99
+    K_epochs: 10
+    eps_clip: 0.2
+    ent_coef: 0.02
+
+convergence_reward_threshold: 0.95
+convergence_check_window: 20
+convergence_delta_threshold: 15.0

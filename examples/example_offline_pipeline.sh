@@ -105,7 +105,7 @@ log "Augment training complete. NPZ files in: $AUGMENT_DIR"
 # --- Run NPZ Averaging ---
 log "Running NPZ averaging..."
 
-PYTHONPATH=$PYTHONPATH:$PROJECT_ROOT python3 -u -m picc_llm.utils.average_npz_files \
+PYTHONPATH=$PYTHONPATH:$PROJECT_ROOT python3 -u -m picc_llm.utils.average_npz_results \
     --inputs "$AUGMENT_DIR"/*.npz \
     --output "$FINAL_AVERAGE_NPZ"
 

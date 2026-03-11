@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=picc-llm-ppo
-#SBATCH --output=logs/picc-llm-ppo_%A_%a.log
-#SBATCH --error=logs/picc-llm-ppo_%A_%a.log
+#SBATCH --job-name=picc-llm-baseline
+#SBATCH --output=logs/picc-llm-baseline_%A_%a.log
+#SBATCH --error=logs/picc-llm-baseline_%A_%a.log
 #SBATCH --time=1:30:00
 #SBATCH --ntasks=1
 #SBATCH --partition=batch
@@ -28,9 +28,9 @@ export MKL_NUM_THREADS=$CORES_PER_MODEL
 
 cd ~/picc-llm
 
-CONFIG_FILE="configs/${SLURM_ARRAY_TASK_ID}.yaml"
+CONFIG_FILE="configs/baseline/${SLURM_ARRAY_TASK_ID}.yaml"
 echo "Using configuration file: ${CONFIG_FILE}"
 
-python3 -m picc_llm.utils.train_ppo --config "${CONFIG_FILE}"
+python3 -m picc_llm.utils.train_baseline --config "${CONFIG_FILE}"
 
 echo "Finished at: $(date)"

@@ -87,5 +87,32 @@ DEFAULT_PROMPTS = {
                 "deliberately want sparse signal for that object."
             )
         }
+    ],
+
+    "full_curriculum_pipeline": [
+        {
+            "name": "plan",
+            "prompt": (
+                "Design a complete {total_stages}-stage curriculum. Follow these rules strictly:\n"
+                "  1. Stage 1 must contain EXACTLY ONE object type. "
+                "Choose the object that is first in the dependency chain (KEY_FRAGMENT).\n"
+                "  2. Each subsequent stage introduces AT MOST ONE new object type.\n"
+                "  3. Respect dependency ordering from the game description: never place an object "
+                "that depends on another without including that dependency.\n"
+                "  4. Use dense rewards (large/medium) in early stages to guide the agent, "
+                "reducing reward density in later stages as the agent becomes more capable.\n"
+                "  5. Grid size should start small (6x6–8x8) and grow gradually toward 12x12–15x15.\n\n"
+                "Outline your complete plan for all {total_stages} stages and explain your reasoning."
+            )
+        },
+        {
+            "name": "generate",
+            "prompt": (
+                "Now generate the complete curriculum as an ordered list of {total_stages} stage configurations. "
+                "Each stage must specify width, height, objects (with counts), and rewards (with tiers). "
+                f"Use only [{', '.join(VALID_OBJECTS)}] as object names. "
+                "Follow your plan exactly. Stage 1 must have exactly one object type: KEY_FRAGMENT."
+            )
+        }
     ]
 }
