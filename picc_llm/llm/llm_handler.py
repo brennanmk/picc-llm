@@ -2,32 +2,41 @@
 """
 picc_llm.llm.llm_handler
 -----------------------
-Handles interactions with Large Language Models (LLMs) via LangChain.
-Decoupled from Flask to allow offline usage.
+Handles interactions with LLMs via LangChain + ChatOpenAI.
+Supports any OpenAI-compatible endpoint: OpenRouter, Ollama, native OpenAI, etc.
 """
 
 import logging
 from typing import Dict, Any, List, Optional
-from langchain_groq import ChatGroq
-from pydantic import BaseModel, Field, ValidationError
+
+from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 log = logging.getLogger(__name__)
 
 
-def format_curriculum_history(training_progress: List[Dict]) -> str:
+def format_curriculum_history(
+    training_progress: List[Dict],
+    feedback_metrics: Optional[List[str]] = None,
+) -> str:
     """
-    Converts the JSON training progress into a readable string for the LLM.
-    """
-    history = []
+    Converts training progress into a readable string for the LLM.
 
-    # Check if training_progress exists/is not empty
+    :param training_progress: List of stage history dicts.
+    :param feedback_metrics: Which metrics to reveal to the LLM.
+        Subset of ["reward", "timestep"]. None = both (backward compat).
+        Success rate is always included as it is not condition-specific.
+    """
     if not training_progress:
         return "No previous stages completed (Initial Stage)."
 
+    if feedback_metrics is None:
+        feedback_metrics = ["reward", "timestep"]
+
+    history = []
     for idx, entry in enumerate(training_progress):
-        # (Rest of logic remains exactly the same)
         params = entry.get("curriculum_params") or entry.get("user_config", {})
-        # Format configuration description
+
         if isinstance(params, dict) and "objects" in params:
             grid_str = f"{params.get('width')}x{params.get('height')}"
             obj_str = ", ".join(
@@ -37,26 +46,36 @@ def format_curriculum_history(training_progress: List[Dict]) -> str:
         else:
             config_desc = str(params)
 
-        # Format Metrics
         success = entry.get("final_eval_success", 0.0)
-        reward = entry.get("final_eval_reward", 0.0)
-        steps = entry.get("final_eval_timesteps", 0)
 
-        stage_str = (
-            f"Stage {idx + 1}:\n"
-            f"  - Config: {config_desc}\n"
-            f"  - Result: Success={success:.2f}, Reward={reward:.1f}, Steps={steps:.1f}"
-        )
-        history.append(stage_str)
+        parts = [
+            f"Stage {idx + 1}:",
+            f"  - Config: {config_desc}",
+            f"  - Success rate: {success:.2f}",
+        ]
+
+        if "reward" in feedback_metrics:
+            reward = entry.get("final_eval_reward", 0.0)
+            parts.append(f"  - Reward: {reward:.1f} (higher is better)")
+
+        if "timestep" in feedback_metrics:
+            steps = entry.get("final_eval_timesteps", 0)
+            parts.append(f"  - Steps taken: {steps:.1f} (lower is better)")
+
+        history.append("\n".join(parts))
 
     return "\n\n".join(history)
 
 
-# --- Config Schemas ---
+# ---------------------------------------------------------------------------
+# Config schemas
+# ---------------------------------------------------------------------------
+
 class LLMConnectionConfig(BaseModel):
     model: str
     api_key: str
-    temperature: float
+    temperature: float = 0.7
+    base_url: Optional[str] = None
 
 
 class PipelineStep(BaseModel):
@@ -76,52 +95,72 @@ class LLMSettings(BaseModel):
     prompts: PromptConfig
 
 
-# --- Output Schema ---
+# ---------------------------------------------------------------------------
+# Output schemas
+# ---------------------------------------------------------------------------
+
 class CurriculumParameters(BaseModel):
-    reasoning: str = Field(description="Explanation of the design choices.")
-    width: int = Field(ge=6, le=15, description="Grid width.")
-    height: int = Field(ge=6, le=15, description="Grid height.")
-    objects: Dict[str, int] = Field(description="Map of object names to counts.")
-    rewards: Dict[str, str] = Field(description="Map of object names to reward tiers (none/small/medium/large).")
+    model_config = {"extra": "ignore"}
+
+    width: Optional[int] = Field(default=None, ge=6, le=15, description="Grid width (grid-based envs only).")
+    height: Optional[int] = Field(default=None, ge=6, le=15, description="Grid height (grid-based envs only).")
+    objects: Dict[str, Any] = Field(description="Map of parameter names to values (int counts or float params).")
+    rewards: Dict[str, str] = Field(
+        description="Map of parameter/subtask names to reward tiers (none/small/medium/large)."
+    )
 
 
 class CurriculumStage(BaseModel):
-    """A single stage within a full curriculum."""
-    reasoning: str = Field(description="Explanation of the design choices for this stage.")
-    width: int = Field(ge=6, le=15, description="Grid width.")
-    height: int = Field(ge=6, le=15, description="Grid height.")
-    objects: Dict[str, int] = Field(description="Map of object names to counts.")
-    rewards: Dict[str, str] = Field(description="Map of object names to reward tiers (none/small/medium/large).")
+    model_config = {"extra": "ignore"}
+
+    width: Optional[int] = Field(default=None, ge=6, le=15, description="Grid width (grid-based envs only).")
+    height: Optional[int] = Field(default=None, ge=6, le=15, description="Grid height (grid-based envs only).")
+    objects: Dict[str, Any] = Field(description="Map of parameter names to values (int counts or float params).")
+    rewards: Dict[str, str] = Field(
+        description="Map of parameter/subtask names to reward tiers (none/small/medium/large)."
+    )
 
 
 class FullCurriculumParameters(BaseModel):
-    """Output schema for generating an entire curriculum in one shot."""
-    overall_reasoning: str = Field(description="High-level explanation of the full curriculum design strategy.")
-    stages: List[CurriculumStage] = Field(description="Ordered list of curriculum stage configurations.")
+    model_config = {"extra": "ignore"}
+
+    stages: List[CurriculumStage] = Field(
+        description="Ordered list of curriculum stage configurations."
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalise_stages_key(cls, values):
+        # Some models use "curriculum" instead of "stages"
+        if isinstance(values, dict) and "stages" not in values:
+            for alias in ("curriculum", "stages_list", "curriculum_stages"):
+                if alias in values:
+                    values["stages"] = values.pop(alias)
+                    break
+        return values
 
 
-# --- Main Handler ---
+# ---------------------------------------------------------------------------
+# Main handler
+# ---------------------------------------------------------------------------
+
 class LLMHandler:
     def __init__(self, settings: Optional[Dict] = None):
         """
         Initialize the LLM Handler.
-        :param settings: Optional dictionary matching LLMSettings schema.
-                         If None, attempts to load from Flask current_app.
+
+        :param settings: Dict matching LLMSettings schema. If None, loads from
+                         Flask current_app.config["LLM_SETTINGS"].
         """
         raw_config = settings
 
-        # Fallback: Try to load from Flask if no explicit config provided
         if raw_config is None:
             try:
                 from flask import current_app
-
-                # This checks if we are actually in an app context
                 if current_app:
                     raw_config = current_app.config.get("LLM_SETTINGS", {})
-            except ImportError:
-                pass  # Flask not installed/available
-            except RuntimeError:
-                pass  # Running outside app context
+            except (ImportError, RuntimeError):
+                pass
 
         if raw_config is None:
             raise ValueError(
@@ -133,44 +172,47 @@ class LLMHandler:
             self.conf = LLMSettings(**raw_config)
         except ValidationError as e:
             log.error(f"Invalid LLM Config: {e}")
-            raise e
+            raise
 
         conn = self.conf.connection
-        log.info(f"Initializing LLM: {conn.model} (Groq)")
+        log.info(f"Initializing LLM: {conn.model} (base_url={conn.base_url or 'default'})")
 
-        self._chat = ChatGroq(
+        self._chat = ChatOpenAI(
             model=conn.model,
             api_key=conn.api_key,
             temperature=conn.temperature,
+            base_url=conn.base_url,
         )
-        self._structured = self._chat.with_structured_output(CurriculumParameters)
+        self._structured = self._chat.with_structured_output(
+            CurriculumParameters, method="json_mode", include_raw=True
+        )
         if self.conf.prompts.full_curriculum_pipeline:
-            self._structured_full = self._chat.with_structured_output(FullCurriculumParameters)
+            self._structured_full = self._chat.with_structured_output(
+                FullCurriculumParameters, method="json_mode", include_raw=True
+            )
+
+        self.last_token_usage: Dict[str, int] = {}
+        self.last_conversation: List[Dict[str, str]] = []
 
     def _select_pipeline(self, current_stage: int) -> List[PipelineStep]:
-        """Selects pipeline based on stage number."""
         prompts = self.conf.prompts
-
         if current_stage == 1:
             log.info("LLM Mode: Initial (Stage 1)")
             return prompts.initial_pipeline
-
         log.info(f"LLM Mode: Continuous (Stage {current_stage})")
         return prompts.continuous_pipeline
 
     def generate_curriculum(self, context_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Executes the appropriate pipeline.
-        Token usage for the call is stored in self.last_token_usage after each invocation.
+        Execute the pipeline for a single stage.
+        Token usage is accumulated into self.last_token_usage.
         """
         msgs = [("system", self.conf.prompts.system_prompt.format(**context_data))]
 
-        # Select pipeline based on stage
         current_stage = context_data.get("current_stage", 1)
         pipeline = self._select_pipeline(current_stage)
 
-        input_tokens = 0
-        output_tokens = 0
+        input_tokens = output_tokens = 0
 
         def _accumulate(response) -> None:
             nonlocal input_tokens, output_tokens
@@ -179,43 +221,40 @@ class LLMHandler:
                 input_tokens += usage.get("input_tokens", 0)
                 output_tokens += usage.get("output_tokens", 0)
 
-        # Run CoT steps
         for step in pipeline[:-1]:
             log.debug(f"Executing LLM Step: {step.name}")
-            user_msg = step.prompt.format(**context_data)
-            msgs.append(("human", user_msg))
-
+            msgs.append(("human", step.prompt.format(**context_data)))
             resp = self._chat.invoke(msgs)
             _accumulate(resp)
             msgs.append(("ai", resp.content))
 
-        # Run Final JSON step
         final_step = pipeline[-1]
         log.debug(f"Executing Final LLM Step: {final_step.name}")
+        msgs.append(("human", final_step.prompt.format(**context_data)))
 
-        user_msg = final_step.prompt.format(**context_data)
-        msgs.append(("human", user_msg))
-
-        res = self._structured.invoke(msgs)
-        _accumulate(res)
+        raw = self._structured.invoke(msgs)
+        _accumulate(raw["raw"])
 
         self.last_token_usage = {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": input_tokens + output_tokens,
         }
+        self.last_conversation = [
+            {"role": role, "content": content} for role, content in msgs
+        ]
 
-        return res.model_dump()
+        if raw["parsed"] is None:
+            raise ValueError(
+                f"LLM returned unparseable response: {raw.get('parsing_error')}"
+            )
+
+        return raw["parsed"].model_dump()
 
     def generate_full_curriculum(self, context_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Generate an entire curriculum (all stages) in a single LLM call.
-
-        Uses the ``full_curriculum_pipeline`` from prompts config.
-
-        :param context_data: Dict with keys ``current_stage`` (always 1),
-                             ``total_stages`` (int).
-        :return: List of dicts, each with keys: width, height, objects, rewards, reasoning.
+        Requires full_curriculum_pipeline to be set in prompts config.
         """
         if not self.conf.prompts.full_curriculum_pipeline:
             raise ValueError(
@@ -226,8 +265,7 @@ class LLMHandler:
         msgs = [("system", self.conf.prompts.system_prompt.format(**context_data))]
         pipeline = self.conf.prompts.full_curriculum_pipeline
 
-        input_tokens = 0
-        output_tokens = 0
+        input_tokens = output_tokens = 0
 
         def _accumulate(response) -> None:
             nonlocal input_tokens, output_tokens
@@ -236,30 +274,35 @@ class LLMHandler:
                 input_tokens += usage.get("input_tokens", 0)
                 output_tokens += usage.get("output_tokens", 0)
 
-        # Run CoT steps (all but last)
         for step in pipeline[:-1]:
             log.debug(f"Executing LLM Step: {step.name}")
-            user_msg = step.prompt.format(**context_data)
-            msgs.append(("human", user_msg))
-
+            msgs.append(("human", step.prompt.format(**context_data)))
             resp = self._chat.invoke(msgs)
             _accumulate(resp)
             msgs.append(("ai", resp.content))
 
-        # Run final structured output step
         final_step = pipeline[-1]
         log.debug(f"Executing Final LLM Step: {final_step.name}")
+        msgs.append(("human", final_step.prompt.format(**context_data)))
 
-        user_msg = final_step.prompt.format(**context_data)
-        msgs.append(("human", user_msg))
-
-        res = self._structured_full.invoke(msgs)
-        _accumulate(res)
+        raw = self._structured_full.invoke(msgs)
+        _accumulate(raw["raw"])
 
         self.last_token_usage = {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": input_tokens + output_tokens,
         }
+        self.last_conversation = [
+            {"role": role, "content": content} for role, content in msgs
+        ]
 
-        return [stage.model_dump() for stage in res.stages]
+        if raw["parsed"] is None:
+            raw_content = getattr(raw.get("raw"), "content", raw.get("raw"))
+            raise ValueError(
+                f"LLM returned unparseable response.\n"
+                f"  parsing_error : {raw.get('parsing_error')}\n"
+                f"  raw content   : {str(raw_content)[:500]}"
+            )
+
+        return [stage.model_dump() for stage in raw["parsed"].stages]

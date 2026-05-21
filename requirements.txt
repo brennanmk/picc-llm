@@ -1,5 +1,7 @@
 numpy
 gymnasium
+mujoco
+gymnasium-robotics>=1.2
 flask
 flask_sqlalchemy
 flask-cors
@@ -15,7 +17,7 @@ tqdm
 requests
 dotenv
 langchain
-langchain-groq
+langchain-openai
 pyyaml
 numba
 celery[redis]

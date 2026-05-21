@@ -110,11 +110,6 @@ class PPO:
         if use_gpu and torch.cuda.is_available():
             self.device = torch.device("cuda:0")
             torch.cuda.empty_cache()
-        else:
-            # If we are running on HPC we can set OMP_NUM_THREADS in the batch script.
-            num_cpus = os.environ.get("OMP_NUM_THREADS", None)
-            if num_cpus:
-                torch.set_num_threads(int(num_cpus))
 
         self.initial_lr_actor = lr_actor
         self.initial_lr_critic = lr_critic
@@ -196,41 +191,46 @@ class PPO:
         return action.detach().cpu().numpy()
 
     def update(self):
+        # Buffer stores one (num_envs,) array per step rather than individual scalars.
+        rewards_np   = np.concatenate(self.buffer.rewards)
+        terminals_np = np.concatenate(self.buffer.is_terminals)
+
         # Monte Carlo estimate of returns
         rewards = []
         discounted_reward = 0
         for reward, is_terminal in zip(
-            reversed(self.buffer.rewards), reversed(self.buffer.is_terminals)
+            reversed(rewards_np.tolist()), reversed(terminals_np.tolist())
         ):
             if is_terminal:
                 discounted_reward = 0
             discounted_reward = reward + (self.gamma * discounted_reward)
-            rewards.insert(0, discounted_reward)
+            rewards.append(discounted_reward)
+        rewards.reverse()
 
         # Normalizing the rewards
         rewards = torch.tensor(rewards, dtype=torch.float32).to(self.device)
         rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-7)
 
-        # convert list to tensor
         old_states = (
-            torch.squeeze(torch.stack(self.buffer.states, dim=0))
+            torch.from_numpy(np.concatenate(self.buffer.states, axis=0))
             .detach()
             .to(self.device)
             .float()
         )
 
         old_actions = (
-            torch.squeeze(torch.stack(self.buffer.actions, dim=0))
+            torch.cat(self.buffer.actions, dim=0)
             .detach()
             .to(self.device)
         )
         old_logprobs = (
-            torch.squeeze(torch.stack(self.buffer.logprobs, dim=0))
+            torch.cat(self.buffer.logprobs, dim=0)
             .detach()
             .to(self.device)
         )
         old_state_values = (
-            torch.squeeze(torch.stack(self.buffer.state_values, dim=0))
+            torch.cat(self.buffer.state_values, dim=0)
+            .squeeze(-1)
             .detach()
             .to(self.device)
         )

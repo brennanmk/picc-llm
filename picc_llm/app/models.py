@@ -48,6 +48,7 @@ class Learning(db.Model):
     progress_current = db.Column(db.Integer, default=0, nullable=False)
     failure_state = db.Column(db.Boolean, default=False, nullable=False)
     complete = db.Column(db.Boolean, nullable=False)
+    page_token = db.Column(db.String(36), nullable=True)
 
 
 class Consent(db.Model):

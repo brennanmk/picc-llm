@@ -8,6 +8,12 @@ It exposes the main class `MicroMinecraft` and the helper enums
 `Object` and `Action`.
 """
 
-from .env import MicroMinecraft, Object
-
 __all__ = ["MicroMinecraft", "Object"]
+
+
+def __getattr__(name):
+    if name in ("MicroMinecraft", "Object"):
+        from .env import MicroMinecraft, Object
+        globals().update({"MicroMinecraft": MicroMinecraft, "Object": Object})
+        return globals()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

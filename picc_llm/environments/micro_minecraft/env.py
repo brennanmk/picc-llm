@@ -35,9 +35,7 @@ class Object(Enum):
     CRAFT_TABLE = 3
     CHEST = 4
     AGENT = 5
-    IRON_ORE = 6
-    FURNACE = 7
-    KEY_FRAGMENT = 8
+    KEY = 6
 
 
 class Action(Enum):
@@ -59,9 +57,7 @@ LIDAR_DETECTABLE_OBJECTS = [
     Object.CRAFT_TABLE,
     Object.EDGE,
     Object.CHEST,
-    Object.IRON_ORE,
-    Object.FURNACE,
-    Object.KEY_FRAGMENT,
+    Object.KEY,
 ]
 
 # This needs to be imported AFTER we define Object
@@ -172,10 +168,7 @@ class MicroMinecraft(PiccEnv):
     _REWARD_STONE = 25
     _MAX_REWARDED_STONE = 1     # reward only applies to first N stone collected
     _REWARD_KEY_FRAGMENT = 25
-    _REWARD_CRAFT_KEY = 25
     _REWARD_UNLOCK_CHEST = 25
-    _REWARD_IRON_ORE = 25
-    _REWARD_SMELT_IRON = 25
     _REWARD_CRAFT_POGO = 200
 
     # Tier multipliers for per-object reward overrides
@@ -192,7 +185,7 @@ class MicroMinecraft(PiccEnv):
     _OBJECT_REWARD_ATTRS: Dict[str, List[Tuple[str, str]]] = {
         "TREE":         [("_eff_reward_wood",         "_REWARD_WOOD")],
         "ROCK":         [("_eff_reward_stone",        "_REWARD_STONE")],
-        "KEY_FRAGMENT": [("_eff_reward_key_fragment", "_REWARD_KEY_FRAGMENT")],
+        "KEY": [("_eff_reward_key_fragment", "_REWARD_KEY_FRAGMENT")],
         "CHEST":        [("_eff_reward_unlock_chest", "_REWARD_UNLOCK_CHEST")],
     }
 
@@ -241,22 +234,12 @@ class MicroMinecraft(PiccEnv):
 
         self.action_space = gym.spaces.Discrete(len(Action))
 
-        self.observation_space = gym.spaces.Tuple(
-            (
-                gym.spaces.Box(
-                    low=0.0,
-                    high=1.0,
-                    shape=((self._number_of_beams * len(LIDAR_DETECTABLE_OBJECTS)),),
-                    dtype=np.float32,
-                ),
-                gym.spaces.Discrete(self._number_of_trees + 1),  # wood
-                gym.spaces.Discrete(self._number_of_rocks + 1),  # stone
-                gym.spaces.Discrete(2),  # num of keys (0 or 1)
-                gym.spaces.Discrete(2),  # num of iron (0 or 1)
-                gym.spaces.Discrete(2),  # num of pickaxe (0 or 1)
-                gym.spaces.Discrete(2),  # num of iron_ore (0 or 1)
-                gym.spaces.Discrete(3),  # num of key_fragments (0, 1, or 2)
-            )
+        lidar_dim = self._number_of_beams * len(LIDAR_DETECTABLE_OBJECTS)
+        self.observation_space = gym.spaces.Box(
+            low=0.0,
+            high=1.0,
+            shape=(lidar_dim + 4,),
+            dtype=np.float32,
         )
 
     @staticmethod
@@ -348,18 +331,13 @@ class MicroMinecraft(PiccEnv):
         else:
             self._grid = np.array(self._randomize_configuration(), dtype=int)
 
-        self._inventory = dict(
-            [
-                ("wood", 0),
-                ("stone", 0),
-                ("pogo", 0),
-                ("key", 0),
-                ("iron", 0),
-                ("pickaxe", 0),
-                ("iron_ore", 0),
-                ("key_fragment", 0),
-            ]
-        )
+        self._inventory = {
+            "wood": 0,
+            "stone": 0,
+            "pogo": 0,
+            "iron": 0,
+            "key_fragment": 0,
+        }
 
         return self._generate_observation(), {}
 
@@ -412,7 +390,7 @@ class MicroMinecraft(PiccEnv):
                     self._inventory["stone"] += 1
                     if self._inventory["stone"] <= self._MAX_REWARDED_STONE:
                         reward = self._eff_reward_stone
-                elif cell_value == Object.KEY_FRAGMENT.value:
+                elif cell_value == Object.KEY.value:
                     self._grid[target_y][target_x] = Object.EMPTY_SPACE.value
                     self._inventory["key_fragment"] += 1
                     reward = self._eff_reward_key_fragment
@@ -485,11 +463,7 @@ class MicroMinecraft(PiccEnv):
                         char = "#"
                     elif cell_value == Object.CHEST.value:
                         char = "U"
-                    elif cell_value == Object.IRON_ORE.value:
-                        char = "I"
-                    elif cell_value == Object.FURNACE.value:
-                        char = "F"
-                    elif cell_value == Object.KEY_FRAGMENT.value:
+                    elif cell_value == Object.KEY.value:
                         char = "k"
                     else:
                         char = "?"  # Unknown object
@@ -507,10 +481,10 @@ class MicroMinecraft(PiccEnv):
         try:
             assert self._grid is not None, "Grid is None"
 
-            encoded_grid = copy.deepcopy(self._grid)
+            encoded_grid = self._grid.copy()
 
-            h = len(encoded_grid)
-            w = len(encoded_grid[0])
+            h = encoded_grid.shape[0]
+            w = encoded_grid.shape[1]
             if (
                 self._agent_y is not None
                 and self._agent_x is not None
@@ -565,7 +539,7 @@ class MicroMinecraft(PiccEnv):
 
         trees = object_counts.get("TREE", 0)
         rocks = object_counts.get("ROCK", 0)
-        key_fragments = object_counts.get("KEY_FRAGMENT", 0)
+        key_fragments = object_counts.get("KEY", 0)
         has_chest = object_counts.get("CHEST", 0) >= 1
         has_craft_table = object_counts.get("CRAFT_TABLE", 0) >= 1
 
@@ -579,7 +553,7 @@ class MicroMinecraft(PiccEnv):
         # Simplified chain: 1 key_fragment unlocks chest → iron
         can_unlock = key_fragments >= 1 and has_chest
         if key_fragments >= 1:
-            max_reward += eff(cls._REWARD_KEY_FRAGMENT, "KEY_FRAGMENT")
+            max_reward += eff(cls._REWARD_KEY_FRAGMENT, "KEY")
         if can_unlock:
             max_reward += eff(cls._REWARD_UNLOCK_CHEST, "CHEST")
 
@@ -607,7 +581,7 @@ class MicroMinecraft(PiccEnv):
             "ROCK": validated_config.grid.number_of_rocks,
             "CRAFT_TABLE": 1,
             "CHEST": 1,
-            "KEY_FRAGMENT": 1,
+            "KEY": 1,
         }
 
     def set_reward_tiers(self, rewards: Dict[str, str]) -> None:
@@ -659,7 +633,7 @@ class MicroMinecraft(PiccEnv):
             target_y += 1
         return target_x, target_y
 
-    def _generate_observation(self) -> tuple:
+    def _generate_observation(self) -> np.ndarray:
         """
         generate an observation, simulate lidar measurement
         This method now acts as a wrapper for the JIT-compiled function.
@@ -681,16 +655,14 @@ class MicroMinecraft(PiccEnv):
             self._edge_value,
         )
 
-        return (
-            lidar_obs,
-            self._inventory["wood"],
-            self._inventory["stone"],
-            self._inventory["key"],
-            self._inventory["iron"],
-            self._inventory["pickaxe"],
-            self._inventory["iron_ore"],
-            self._inventory["key_fragment"],
-        )
+        inv = np.array([
+            self._inventory["wood"] / max(1, self._number_of_trees),
+            self._inventory["stone"] / max(1, self._number_of_rocks),
+            float(self._inventory["key_fragment"]),
+            float(self._inventory["iron"]),
+        ], dtype=np.float32)
+
+        return np.concatenate([lidar_obs, inv])
 
     def _get_standard_object_list(self) -> List[int]:
         """
@@ -705,7 +677,7 @@ class MicroMinecraft(PiccEnv):
         # Fixed counts — simplified task: 1 key, chest gives iron directly
         objects.extend([Object.CRAFT_TABLE.value] * 1)
         objects.extend([Object.CHEST.value] * 1)
-        objects.extend([Object.KEY_FRAGMENT.value] * 1)
+        objects.extend([Object.KEY.value] * 1)
 
         return objects
 

@@ -1,0 +1,57 @@
+experiment_name: deepseek-v4_no_feedback
+test_storage: experiments/results
+number_of_procs: 1
+env: micro_minecraft
+env_config:
+  grid:
+    height: 10
+    width: 10
+  lidar:
+    range: 5
+    beams: 8
+mode: llm_full
+total_stages: 5
+num_sessions: 15
+runs_per_session: 1
+seeds:
+- 0
+- 1
+- 2
+- 3
+- 4
+- 5
+- 6
+- 7
+- 8
+- 9
+- 10
+- 11
+- 12
+- 13
+- 14
+curriculum_training_config:
+  episodes_per_iteration: 200
+  episodes_per_evaluation: 50
+  max_episode_len: 500
+  num_parallel_envs: 10
+  update_frequency: 1600
+  lr_actor: 0.0003
+  lr_critic: 0.001
+  gamma: 0.99
+  K_epochs: 20
+  eps_clip: 0.2
+  ent_coef: 0.01
+  max_grad_norm: 0.5
+  train_mode: fixed
+  eval_mode: fixed
+  train_until_stable: true
+  stability_delta_threshold: 5.0
+  stability_check_window: 5
+  min_stability_iterations: 3
+  max_stability_training_iterations: 20
+llm_settings:
+  connection:
+    model: deepseek/deepseek-v4-pro
+    base_url: https://openrouter.ai/api/v1
+    api_key: ${OPENROUTER_API_KEY}
+    temperature: 0.7

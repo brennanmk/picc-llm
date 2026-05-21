@@ -75,6 +75,12 @@ class CurriculumConfig(BaseModel):
     llm_settings: Optional[Dict] = None
     total_stages: int = 5
     num_sessions: int = 1
+    # Which metrics to reveal to the LLM in llm_interactive mode.
+    # Subset of ["reward", "timestep"]. None = both (backward compat).
+    feedback_metrics: Optional[List[str]] = None
+    # Explicit seeds for each session, for reproducibility across LLM conditions.
+    # len(seeds) must equal num_sessions. None = use session_id as seed.
+    seeds: Optional[List[int]] = None
 
     # For augment mode
     curriculum_results_file: Optional[str] = None
@@ -148,6 +154,11 @@ class CurriculumConfig(BaseModel):
             raise ValueError(
                 f"mode must be 'curriculum', 'augment', 'full', "
                 f"'llm_interactive', or 'llm_full', got '{self.mode}'"
+            )
+
+        if self.seeds is not None and len(self.seeds) != self.num_sessions:
+            raise ValueError(
+                f"seeds length ({len(self.seeds)}) must match num_sessions ({self.num_sessions})"
             )
 
         if self.augment_decay_scope not in ("global", "phase"):
@@ -305,10 +316,11 @@ class TrainCurriculum:
         print(f"Processing {len(sessions)} sessions\n")
 
         worker_args = []
-        for session_data in sessions:
+        for session_idx, session_data in enumerate(sessions):
+            seed = self.config.seeds[session_idx] if self.config.seeds else None
             for run_idx in range(self.config.runs_per_session):
                 worker_args.append(
-                    (session_data, run_idx, self.config, self.save_path, "curriculum")
+                    (session_data, run_idx, self.config, self.save_path, "curriculum", None, seed)
                 )
 
         results = self._run_parallel_workers(worker_args)
@@ -342,7 +354,7 @@ class TrainCurriculum:
         worker_args = []
         for session_data in curriculum_results:
             worker_args.append(
-                (session_data, 0, self.config, self.save_path, "augment")
+                (session_data, 0, self.config, self.save_path, "augment", None, None)
             )
 
         results = self._run_parallel_workers(worker_args)
@@ -358,10 +370,11 @@ class TrainCurriculum:
         print(f"Processing {len(sessions)} sessions for full training\n")
 
         worker_args = []
-        for session_data in sessions:
+        for session_idx, session_data in enumerate(sessions):
+            seed = self.config.seeds[session_idx] if self.config.seeds else None
             for run_idx in range(self.config.runs_per_session):
                 worker_args.append(
-                    (session_data, run_idx, self.config, self.save_path, "full")
+                    (session_data, run_idx, self.config, self.save_path, "full", None, seed)
                 )
 
         results = self._run_parallel_workers(worker_args)
@@ -398,19 +411,35 @@ class TrainCurriculum:
         return resolved
 
     @staticmethod
-    def _prepare_llm_settings(raw_settings: Dict) -> Dict:
-        """Resolve env vars and auto-inject DEFAULT_PROMPTS if prompts are omitted."""
+    def _prepare_llm_settings(raw_settings: Dict, env_name: Optional[str] = None) -> Dict:
+        """Resolve env vars and auto-inject prompts built from the env's description module."""
         settings = TrainCurriculum._resolve_env_vars(raw_settings)
         if "prompts" not in settings:
-            from picc_llm.llm.prompts import DEFAULT_PROMPTS
-            settings["prompts"] = DEFAULT_PROMPTS
+            from picc_llm.llm.prompts import build_prompts, DEFAULT_PROMPTS
+            description = TrainCurriculum._load_env_description(env_name)
+            settings["prompts"] = build_prompts(description) if description is not None else DEFAULT_PROMPTS
         return settings
+
+    @staticmethod
+    def _load_env_description(env_name: Optional[str]):
+        """Import and return the description module for the given env, or None."""
+        if env_name is None:
+            return None
+        _description_modules = {
+            "minecraft": "picc_llm.environments.micro_minecraft.description",
+            "fetch": "picc_llm.environments.fetch.description",
+        }
+        module_path = _description_modules.get(env_name)
+        if module_path is None:
+            return None
+        import importlib
+        return importlib.import_module(module_path)
 
     def _run_llm_full_mode(self):
         """Pre-generate full curricula via LLM, then train on them sequentially."""
         print("Mode: LLM_FULL - Generating complete curricula then training\n")
 
-        llm_settings = self._prepare_llm_settings(self.config.llm_settings)
+        llm_settings = self._prepare_llm_settings(self.config.llm_settings, self.config.env)
 
         # Generate all curricula upfront in main process
         all_sessions = []
@@ -441,7 +470,11 @@ class TrainCurriculum:
             )
             with open(curriculum_path, "w") as f:
                 json.dump(
-                    {"stages": stages, "token_usage": llm.last_token_usage},
+                    {
+                        "stages": stages,
+                        "token_usage": llm.last_token_usage,
+                        "conversation": llm.last_conversation,
+                    },
                     f, indent=2,
                 )
             print(f"  Saved generated curriculum: {curriculum_path}")
@@ -452,10 +485,11 @@ class TrainCurriculum:
         # Reuse existing curriculum training — mode="curriculum" routes to
         # _execute_curriculum_phase which handles the training_progress list.
         worker_args = []
-        for session_data in sessions:
+        for session_idx, session_data in enumerate(sessions):
+            seed = self.config.seeds[session_idx] if self.config.seeds else None
             for run_idx in range(self.config.runs_per_session):
                 worker_args.append(
-                    (session_data, run_idx, self.config, self.save_path, "curriculum")
+                    (session_data, run_idx, self.config, self.save_path, "curriculum", None, seed)
                 )
 
         results = self._run_parallel_workers(worker_args)
@@ -491,10 +525,12 @@ class TrainCurriculum:
         print(f"Processing {len(sessions)} interactive LLM sessions\n")
 
         worker_args = []
-        for session_data in sessions:
+        for session_idx, session_data in enumerate(sessions):
+            seed = self.config.seeds[session_idx] if self.config.seeds else None
             for run_idx in range(self.config.runs_per_session):
                 worker_args.append(
-                    (session_data, run_idx, self.config, self.save_path, "llm_interactive")
+                    (session_data, run_idx, self.config, self.save_path, "llm_interactive",
+                     self.config.feedback_metrics, seed)
                 )
 
         results = self._run_parallel_workers(worker_args)
@@ -554,11 +590,14 @@ class TrainCurriculum:
         config: CurriculumConfig,
         save_path: str,
         mode: str,
+        feedback_metrics: Optional[List[str]] = None,
+        seed: Optional[int] = None,
     ) -> Optional[Dict]:
         """Worker that trains a single session run."""
 
         learning_id = session_data.get("learning_id", 0)
         session_id = (learning_id * 1000) + run_index
+        training_seed = seed if seed is not None else session_id
 
         try:
             if mode in ["curriculum", "full"]:
@@ -567,6 +606,7 @@ class TrainCurriculum:
                     session_id=session_id,
                     config=config,
                     save_path=save_path,
+                    seed=training_seed,
                 )
             elif mode == "llm_interactive":
                 curriculum_history = TrainCurriculum._execute_llm_interactive_phase(
@@ -574,6 +614,8 @@ class TrainCurriculum:
                     session_id=session_id,
                     config=config,
                     save_path=save_path,
+                    feedback_metrics=feedback_metrics,
+                    seed=training_seed,
                 )
             else:  # mode == "augment"
                 curriculum_history = TrainCurriculum._load_curriculum_history(
@@ -603,7 +645,8 @@ class TrainCurriculum:
 
     @staticmethod
     def _execute_curriculum_phase(
-        session_data: Dict, session_id: int, config: CurriculumConfig, save_path: str
+        session_data: Dict, session_id: int, config: CurriculumConfig, save_path: str,
+        seed: Optional[int] = None,
     ) -> Dict:
         """
         Execute the curriculum training phase from exported session data.
@@ -659,7 +702,7 @@ class TrainCurriculum:
             env_config=config.env_config,
             save_path=model_path,
             load_path=None,
-            seed=session_id,
+            seed=seed if seed is not None else session_id,
             **curriculum_config,
         )
 
@@ -763,7 +806,12 @@ class TrainCurriculum:
 
     @staticmethod
     def _execute_llm_interactive_phase(
-        session_data: Dict, session_id: int, config: CurriculumConfig, save_path: str
+        session_data: Dict,
+        session_id: int,
+        config: CurriculumConfig,
+        save_path: str,
+        feedback_metrics: Optional[List[str]] = None,
+        seed: Optional[int] = None,
     ) -> Dict:
         """
         Execute LLM-interactive curriculum training.
@@ -780,7 +828,7 @@ class TrainCurriculum:
         print(f"\nSession {session_id}: Starting LLM-interactive curriculum ({total_stages} stages)")
 
         # Each worker creates its own LLMHandler instance
-        llm_settings = TrainCurriculum._prepare_llm_settings(config.llm_settings)
+        llm_settings = TrainCurriculum._prepare_llm_settings(config.llm_settings, config.env)
         llm = LLMHandler(settings=llm_settings)
 
         # Setup environment
@@ -815,7 +863,7 @@ class TrainCurriculum:
             env_config=config.env_config,
             save_path=model_path,
             load_path=None,
-            seed=session_id,
+            seed=seed if seed is not None else session_id,
             **curriculum_config,
         )
 
@@ -829,7 +877,7 @@ class TrainCurriculum:
 
             # --- Step 1: Query LLM for this stage's config ---
             context_data = {
-                "context": format_curriculum_history(llm_history),
+                "context": format_curriculum_history(llm_history, feedback_metrics=feedback_metrics),
                 "current_stage": current_stage,
                 "total_stages": total_stages,
             }
@@ -837,7 +885,11 @@ class TrainCurriculum:
             print(f"  Stage {current_stage}/{total_stages}: Querying LLM...")
             llm_result = llm.generate_curriculum(context_data)
 
-            generated_stages.append(llm_result)
+            generated_stages.append({
+                **llm_result,
+                "_conversation": llm.last_conversation,
+                "_token_usage": llm.last_token_usage,
+            })
 
             # Build user_params for Trainer
             user_params = {
@@ -900,7 +952,6 @@ class TrainCurriculum:
                 "stage": current_stage,
                 "objects": llm_result["objects"],
                 "rewards": llm_result["rewards"],
-                "llm_reasoning": llm_result.get("reasoning", ""),
                 "iterations_taken": iterations_taken,
                 "max_iterations": max_iterations,
                 "stabilized": iterations_taken < max_iterations,

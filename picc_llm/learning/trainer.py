@@ -13,12 +13,14 @@ Gemini helped with doc strings and parallelization refactor
 
 from picc_llm.environments import ENVIRONMENTS
 from picc_llm.learning.ppo import PPO
+from picc_llm.learning.chunked_vec_env import ChunkedVecEnv
 from picc_llm.environments.schemas import TrainingMode
 from picc_llm.environments.wrappers import ConfigResetWrapper
 
 from pydantic import BaseModel, ValidationError, model_validator
 from gymnasium import wrappers
 from gymnasium.vector import SyncVectorEnv
+import multiprocessing as mp
 import numpy as np
 import os
 import copy
@@ -55,6 +57,10 @@ class TrainerKwargs(BaseModel):
     max_stability_training_iterations: int = 100
     min_stability_proportion: Optional[float] = None
     num_parallel_envs: int = 10
+    num_env_workers: int = 1
+    number_of_procs: int = 1
+    torch_num_threads: Optional[int] = None
+    freeze_actor_updates: int = 0
 
     train_mode: TrainingMode = TrainingMode.RANDOM
     eval_mode: TrainingMode = TrainingMode.RANDOM
@@ -112,6 +118,7 @@ class Trainer:
             raise ValueError(f"Invalid training configuration: {e}")
 
         self.num_envs = validated_kwargs.num_parallel_envs
+        self._num_env_workers = validated_kwargs.num_env_workers
         self.default_env_config = env_config
         self.env_name_or_class = env
         self.max_episode_len = validated_kwargs.max_episode_len
@@ -126,29 +133,40 @@ class Trainer:
         self._train_mode = validated_kwargs.train_mode
         self._eval_mode = validated_kwargs.eval_mode
 
+        _env_class = (
+            ENVIRONMENTS[self.env_name_or_class]
+            if isinstance(self.env_name_or_class, str)
+            else self.env_name_or_class
+        )
+        _env_config = self.default_env_config
+        _max_ep_len = self.max_episode_len
+
         def make_env():
-            """Factory function for creating and wrapping environments."""
-
             def _init():
-                base_env = (
-                    ENVIRONMENTS[self.env_name_or_class](**self.default_env_config)
-                    if isinstance(self.env_name_or_class, str)
-                    else self.env_name_or_class(**self.default_env_config)
-                )
-
-                env = ConfigResetWrapper(base_env)
-
-                if self.max_episode_len:
-                    env = wrappers.TimeLimit(
-                        env, max_episode_steps=self.max_episode_len
-                    )
-
-                flattened_env = wrappers.FlattenObservation(env)
-                return flattened_env
-
+                env = ConfigResetWrapper(_env_class(**_env_config))
+                if _max_ep_len:
+                    env = wrappers.TimeLimit(env, max_episode_steps=_max_ep_len)
+                return env
             return _init
 
-        self._env = SyncVectorEnv([make_env() for _ in range(self.num_envs)])
+        env_fns = [make_env() for _ in range(self.num_envs)]
+        if self._num_env_workers > 1 and not mp.current_process().daemon:
+            self._env = ChunkedVecEnv(env_fns, n_workers=self._num_env_workers)
+        else:
+            self._env = SyncVectorEnv(env_fns)
+
+        # Cap PyTorch intra-op threads to avoid oversubscription when multiple
+        # trainers run in parallel. Priority: manual > OMP_NUM_THREADS > SLURM > cpu_count.
+        n_threads = validated_kwargs.torch_num_threads
+        if n_threads is None:
+            omp = os.environ.get("OMP_NUM_THREADS")
+            if omp:
+                n_threads = int(omp)
+            else:
+                slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
+                total_cpus = int(slurm_cpus) if slurm_cpus else (os.cpu_count() or 1)
+                n_threads = min(8, max(1, total_cpus // validated_kwargs.number_of_procs))
+        torch.set_num_threads(n_threads)
 
         if seed is not None:
             torch.manual_seed(seed)
@@ -156,7 +174,9 @@ class Trainer:
 
         self.seed = seed
 
-        self._unwrapped_env = self._env.envs[0].env.env.env
+        # Keep a standalone env instance for utility methods (encode_config, decode_config).
+        # Workers in ChunkedVecEnv run in separate processes and aren't accessible directly.
+        self._unwrapped_env = _env_class(**_env_config)
 
         state_dim = self._env.single_observation_space.shape[0]
         action_dim = self._env.single_action_space.n
@@ -186,6 +206,9 @@ class Trainer:
             validated_kwargs.max_stability_training_iterations
         )
         self._min_stability_proportion = validated_kwargs.min_stability_proportion
+
+        self._freeze_actor_updates = validated_kwargs.freeze_actor_updates
+        self._updates_done = 0
 
         self._reward_buffer = []
         self._is_terminal_buffer = []
@@ -311,7 +334,7 @@ class Trainer:
             objects = {
                 k: v
                 for k, v in params.items()
-                if k not in ["width", "height", "reasoning", "grid", "rewards"]
+                if k not in ["width", "height", "grid", "rewards"]
             }
             return (objects if objects else None), grid_override, rewards
 
@@ -553,25 +576,22 @@ class Trainer:
 
             current_episode_timesteps += 1
 
+            # Append a full batch per step — faster than num_envs individual appends.
+            is_terminal_batch = dones | truncs
+            self._ppo_agent.buffer.states.append(current_states)
+            self._ppo_agent.buffer.actions.append(actions)
+            self._ppo_agent.buffer.logprobs.append(log_probs)
+            self._ppo_agent.buffer.state_values.append(state_values)
+            self._ppo_agent.buffer.rewards.append(rewards)
+            self._ppo_agent.buffer.is_terminals.append(is_terminal_batch)
+
+            global_time_steps += self.num_envs
+
+            # Per-env episode tracking (no buffer ops here)
             for i in range(self.num_envs):
-                is_terminal = dones[i] or truncs[i]
-
-                # Add to buffer
-                self._ppo_agent.buffer.states.append(
-                    torch.from_numpy(current_states[i]).to(self._ppo_agent.device)
-                )
-                self._ppo_agent.buffer.actions.append(actions[i])
-                self._ppo_agent.buffer.logprobs.append(log_probs[i])
-                self._ppo_agent.buffer.state_values.append(state_values[i])
-                self._ppo_agent.buffer.rewards.append(rewards[i])
-                self._ppo_agent.buffer.is_terminals.append(is_terminal)
-
-                # Update trackers
                 current_episode_rewards[i] += rewards[i]
-                global_time_steps += 1
 
-                # Check if this env is done
-                if is_terminal:
+                if is_terminal_batch[i]:
                     total_episodes_collected += 1
 
                     ep_rewards.append(current_episode_rewards[i])
@@ -582,7 +602,6 @@ class Trainer:
                     ):  # Only count non-truncated as success
                         ep_success += 1
 
-                    # Reset this env's trackers
                     current_episode_rewards[i] = 0
                     current_episode_timesteps[i] = 0
 
@@ -593,11 +612,14 @@ class Trainer:
                         )
                         progress_callback(min(progress, 100))
 
-                # Update policy
-                if len(self._ppo_agent.buffer.rewards) >= self._update_frequency:
-                    self._try_decay(total_episodes_collected)
-                    self._ppo_agent.update()
-                    self._ppo_agent.buffer.clear()
+            # Buffer length is in steps; multiply by num_envs for transition count
+            if len(self._ppo_agent.buffer.rewards) * self.num_envs >= self._update_frequency:
+                self._try_decay(total_episodes_collected)
+                if self._updates_done < self._freeze_actor_updates:
+                    self._ppo_agent.optimizer.param_groups[0]["lr"] = 0.0
+                self._ppo_agent.update()
+                self._updates_done += 1
+                self._ppo_agent.buffer.clear()
 
             # Update states for next loop
             current_states = next_states

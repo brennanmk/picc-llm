@@ -33,6 +33,7 @@ from picc_llm.app.learning_handler import LearningHandler
 from picc_llm.app.models import (
     Compensation,
     Consent,
+    Learning,
     PostQuestionnaire,
     PreQuestionnaire,
     User,
@@ -40,6 +41,7 @@ from picc_llm.app.models import (
 from picc_llm.app.utils.app_utils import (
     elapsed_time,
     generate_conditions,
+    generate_page_token,
     image_to_base64,
     in_progress,
     visualization_type,
@@ -380,6 +382,15 @@ def environment():
         object_enum_map = env.get_object_enum_map()
         configurable_objects = env.get_configurable_objects()
 
+        env_config = current_app.config["ENV_CONFIGS"][learning_handler.environment]
+        max_limits = env.get_max_limits(env_config)
+        default_grid_width = env_config.get("grid", {}).get("width", 20)
+        default_grid_height = env_config.get("grid", {}).get("height", 20)
+
+        page_token = generate_page_token(user_index)
+        current_stage = len(learning_handler.learner.training_progress) + 1
+        total_stages = current_app.config["TRAINING_ITERATIONS_PER_CONDITION"]
+
         return render_template(
             "environment.html",
             config=active_config,
@@ -393,12 +404,30 @@ def environment():
             timestamp=datetime.now().isoformat(),
             enum_image_map=object_image_map,
             object_enum_map=object_enum_map,
-            configurable_objects=configurable_objects
+            configurable_objects=configurable_objects,
+            max_limits=max_limits,
+            default_grid_width=default_grid_width,
+            default_grid_height=default_grid_height,
+            page_token=page_token,
+            current_stage=current_stage,
+            total_stages=total_stages,
         )
 
     if request.method == "POST":
         data = request.get_json()
         app.logger.debug(f"User {user_index}: Received POST data in environment view.")
+
+        # Validate page token to detect duplicate tabs.
+        incoming_token = data.get("page_token")
+        user = User.query.filter_by(user_index=user_index).first()
+        entry = Learning.query.filter_by(
+            learning_id=(user.experiment_order)[0]
+        ).first()
+        if incoming_token != entry.page_token:
+            app.logger.warning(
+                f"User {user_index}: Page token mismatch — rejecting stale tab."
+            )
+            return "", 404
 
         timestamp = data["timestamp"]
         elapsed = data["elapsed_time"]
@@ -408,18 +437,21 @@ def environment():
             )
             return "", 404
 
-        # Updated to check for 'curriculum_params' instead of 'user_config'
         if "curriculum_params" in data:
             curriculum_params = data["curriculum_params"]
             learning_handler = LearningHandler(user_index)
 
-            # Check if we are in debug/offline mode, if so we only need to save
-            if current_app.config.get("APP_DEBUG_MODE", False):
+            total_stages = current_app.config["TRAINING_ITERATIONS_PER_CONDITION"]
+            current_stage = len(learning_handler.learner.training_progress) + 1
+            is_last_stage = current_stage >= total_stages
+
+            # Skip training on the final stage or in debug mode — save params offline
+            if is_last_stage or current_app.config.get("APP_DEBUG_MODE", False):
                 app.logger.debug(
-                    f"User {user_index}: App in debug mode. Queuing job in database."
+                    f"User {user_index}: {'Last stage' if is_last_stage else 'Debug mode'} — saving params without training."
                 )
                 learning_handler.save_for_offline_training(curriculum_params)
-                return "", 200  # Return success, page will reload to next step
+                return "", 200
 
             else:
                 app.logger.debug(
@@ -435,32 +467,46 @@ def environment():
         return "", 200
 
 
-@app.route("/preview", methods=["POST"])
+@app.route("/preview_environment", methods=["POST"])
 @verify_user("environment")
 def preview_environment():
     """
-    Generates a single instance of the environment based on
-    user-defined curriculum parameters.
+    Generates a preview of the environment based on object counts.
+    Used by the curriculum interface "Randomize" button to show random layouts.
     """
     user_index = session["user_index"]
     data = request.get_json()
 
-    width = int(data.get("width", 10))
-    height = int(data.get("height", 10))
-    object_counts = data.get("objects", {})
+    if not data:
+        app.logger.warning(f"User {user_index}: Preview request with no data")
+        return jsonify({"status": "error", "message": "No data provided"}), 400
 
-    handler = LearningHandler(user_index)
-    env_class = ENVIRONMENTS[handler.environment]
+    object_counts = data.get("objects", {})
+    grid_data = data.get("grid", {})
+
+    learning_handler = LearningHandler(user_index)
+    env_class = ENVIRONMENTS[learning_handler.environment]
+    default_grid = current_app.config["ENV_CONFIGS"][learning_handler.environment]["grid"]
+
+    width = grid_data.get("width", default_grid["width"])
+    height = grid_data.get("height", default_grid["height"])
 
     try:
         grid_layout = env_class.generate_from_params(width, height, object_counts)
 
-        return jsonify({"grid": grid_layout, "status": "success"})
+        app.logger.debug(f"User {user_index}: Preview generated successfully")
+
+        return jsonify({"status": "success", "grid": grid_layout})
 
     except ValueError as e:
+        app.logger.warning(f"User {user_index}: Preview generation failed - {e}")
         return jsonify({"status": "error", "message": str(e)}), 400
+
     except Exception as e:
-        app.logger.error(f"Preview generation failed: {e}")
+        app.logger.error(
+            f"User {user_index}: Preview generation failed unexpectedly - {e}",
+            exc_info=True,
+        )
         return jsonify({"status": "error", "message": "Generation failed"}), 500
 
 

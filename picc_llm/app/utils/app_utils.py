@@ -17,6 +17,7 @@ from picc_llm.app.models import Learning
 import numpy as np
 from datetime import datetime
 import os
+import uuid
 from picc_llm.app.models import (
     User,
 )
@@ -94,6 +95,25 @@ def generate_conditions(user_index: int) -> tuple:
         del environment_count[environment]
 
     return conditions, study_condition
+
+
+def generate_page_token(user_index: int) -> str:
+    """
+    Generates a fresh UUID page token for the current learning entry and stores
+    it in the DB. Any previously issued token is immediately invalidated, so a
+    second tab loading /study will orphan the first tab's syncs within one tick.
+
+    :param user_index: index of the user
+    :return: the new token string
+    """
+    user = User.query.filter_by(user_index=user_index).first()
+    entry = Learning.query.filter_by(
+        learning_id=(user.experiment_order)[0]
+    ).first()
+    token = str(uuid.uuid4())
+    entry.page_token = token
+    db.session.commit()
+    return token
 
 
 def elapsed_time(user_index: int, elapsed_time: float, timestamp: datetime) -> None:
